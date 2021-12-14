@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"github.com/bmatcuk/doublestar/v4"
 	"github.com/kadaan/log4shell-scanner/version"
 	"github.com/spf13/cobra"
 	"io"
@@ -28,6 +29,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -92,6 +94,7 @@ indicates they can be exploited.  The scanner with also search within jar, zip, 
 	hashesFile   string
 	printVersion bool
 	verbosity    int
+	includeGlobs []string
 )
 
 func init() {
@@ -101,6 +104,7 @@ func init() {
 	_ = rootCmd.MarkFlagDirname("root")
 	rootCmd.Flags().StringVar(&hashesFile, "hashes", "", "SHA256 hashes of vulnerable jars")
 	_ = rootCmd.MarkFlagFilename("hashes")
+	rootCmd.Flags().StringSliceVar(&includeGlobs, "include-globs", []string{"**/**"}, "Globs that indicate which path to include in the scan")
 	rootCmd.Flags().CountVarP(&verbosity, "verbose", "v", "Verbose logging")
 	rootCmd.Flags().BoolVar(&printVersion, "version", false, "Print version")
 }
@@ -113,43 +117,68 @@ func pre(_ *cobra.Command, _ []string) {
 }
 
 func run(_ *cobra.Command, _ []string) error {
+	for _, g := range includeGlobs {
+		if !doublestar.ValidatePathPattern(g) {
+			return fmt.Errorf("invalid include glob: %s", g)
+		}
+	}
+
 	hashes, err := getHashes()
 	if err != nil {
 		return fmt.Errorf("failed to load hashes: %v", err)
 	}
 
 	totalScanned := newZero()
-	hits := newArray()
-	err = Walk(root, func(path string, d fs.DirEntry, err error) error {
+	hits := newHitsSet()
+	err = WalkDir(root, func(path string, d DirEntryEx, err error) error {
 		if err != nil {
 			return err
 		}
-		if !d.IsDir() {
-			info, err := d.Info()
+		if d.IsDir() {
+			if d.DirEntry().Name() == ".git" {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !isIncluded(path) {
+			return nil
+		}
+		fileId, _ := filepath.Rel(root, path)
+		filePath := path
+		if d.IsSymLink() {
+			targetPath, err := d.SymLinkTargetPath()
+			if targetPath == nil || err != nil {
+				return err
+			}
+			filePath = *targetPath
+			relTargetPath, _ := filepath.Rel(path, filePath)
+			fileId = fmt.Sprintf("%s (%s)", fileId, relTargetPath)
+		}
+		if _, seen := (*hits)[filePath]; seen {
+			return nil
+		}
+		*totalScanned += 1
+		if strings.HasSuffix(filePath, ".jar") {
+			affected, err := checkJarFileHash(hashes, filePath)
+			if err != nil {
+				return fmt.Errorf("failed to read %s: %v", fileId, err)
+			}
+			if affected {
+				fmt.Printf("+++ %s\n", fileId)
+				(*hits)[path] = struct{}{}
+			} else if verbosity > 0 {
+				fmt.Printf("--- %s\n", fileId)
+			}
+			jarContentHits, total, err := scanJarContents(hashes, fileId, filePath)
+			*totalScanned += total
+			for _, h := range jarContentHits {
+				(*hits)[h] = struct{}{}
+			}
 			if err != nil {
 				return err
 			}
-			*totalScanned += 1
-			if strings.HasSuffix(info.Name(), ".jar") {
-				affected, err := checkJarFileHash(hashes, path)
-				if err != nil {
-					return fmt.Errorf("failed to read %s: %v", path, err)
-				}
-				if affected {
-					fmt.Printf("+++ %s\n", path)
-					*hits = append(*hits, path)
-				} else if verbosity > 0 {
-					fmt.Printf("--- %s\n", path)
-				}
-				jarContentHits, total, err := scanJarContents(hashes, path)
-				*totalScanned += total
-				*hits = append(*hits, jarContentHits...)
-				if err != nil {
-					return err
-				}
-			} else if verbosity > 1 {
-				log.Printf("### %s\n", path)
-			}
+		} else if verbosity > 1 {
+			fmt.Printf("### %s\n", filePath)
 		}
 		return nil
 	})
@@ -160,7 +189,7 @@ func run(_ *cobra.Command, _ []string) error {
 	fmt.Printf("Total Affected Files: %d\n", len(*hits))
 	fmt.Println("Affected Files: ")
 	if len(*hits) > 0 {
-		for _, hit := range *hits {
+		for hit := range *hits {
 			fmt.Printf("    %s\n", hit)
 		}
 	} else {
@@ -170,6 +199,17 @@ func run(_ *cobra.Command, _ []string) error {
 		os.Exit(2)
 	}
 	return nil
+}
+
+func isIncluded(path string) bool {
+	includeGlobMatch := false
+	for _, g := range includeGlobs {
+		if ok, _ := doublestar.PathMatch(g, path); ok {
+			includeGlobMatch = true
+			break
+		}
+	}
+	return includeGlobMatch
 }
 
 func getHashes() (map[string]struct{}, error) {
@@ -202,13 +242,13 @@ func getHashes() (map[string]struct{}, error) {
 	return hashes, nil
 }
 
-func scanJarContents(hashes map[string]struct{}, filename string) ([]string, int, error) {
+func scanJarContents(hashes map[string]struct{}, fileId string, filename string) ([]string, int, error) {
 	total := 0
 	var hits []string
 	r, err := zip.OpenReader(filename)
 	if err != nil {
 		if err.Error() != "zip: not a valid zip file" {
-			return hits, 0, fmt.Errorf("failed to open %s: %v", filename, err)
+			return hits, 0, fmt.Errorf("failed to open %s: %v", fileId, err)
 		} else {
 			return hits, 0, nil
 		}
@@ -221,17 +261,16 @@ func scanJarContents(hashes map[string]struct{}, filename string) ([]string, int
 		if strings.HasSuffix(file.Name, ".jar") {
 			affected, err := checkJarContentFile(hashes, file)
 			if err != nil {
-				return hits, total, fmt.Errorf("failed to read %s ===> %s: %v", filename, file.Name, err)
+				return hits, total, fmt.Errorf("failed to read %s ==> %s: %v", fileId, file.Name, err)
 			}
 			if affected {
-				id := fmt.Sprintf("%s ===> %s", filename, file.Name)
-				hits = append(hits, id)
-				fmt.Printf("+++ %s\n", id)
+				hits = append(hits, fmt.Sprintf("%s ==> %s", fileId, file.Name))
+				fmt.Printf("+++ %s ==> %s\n", fileId, file.Name)
 			} else if verbosity > 0 {
-				fmt.Printf("--- %s ===> %s\n", filename, file.Name)
+				fmt.Printf("--- %s ==> %s\n", fileId, file.Name)
 			}
 		} else if verbosity > 1 {
-			fmt.Printf("### %s ===> %s\n", filename, file.Name)
+			fmt.Printf("### %s ==> %s\n", fileId, file.Name)
 		}
 	}
 	return hits, total, nil
@@ -276,66 +315,174 @@ func checkJarHash(hashes map[string]struct{}, reader io.Reader) (bool, error) {
 	return false, nil
 }
 
-func Walk(path string, walkFn fs.WalkDirFunc) error {
-	symSet := map[string]struct{}{}
-	return walk(path, path, &symSet, walkFn)
+func WalkDir(root string, fn WalkDirFunc) error {
+	info, err := os.Lstat(root)
+	if err != nil {
+		err = fn(root, nil, err)
+	} else {
+		entry := fs.FileInfoToDirEntry(info)
+		err = walkDir(root, &statDirEntryEx{&statDirEntry{entry}, root, nil, nil}, fn)
+	}
+	if err == filepath.SkipDir {
+		return nil
+	}
+	return err
 }
 
-func walk(filename string, linkDirname string, symSet *map[string]struct{}, walkFn fs.WalkDirFunc) error {
-	symWalkFunc := func(path string, d fs.DirEntry, err error) error {
-		if fname, err := filepath.Rel(filename, path); err == nil {
-			path = filepath.Join(linkDirname, fname)
-		} else {
+func walkDir(path string, d DirEntryEx, walkDirFn WalkDirFunc) error {
+	if err := walkDirFn(path, d, nil); err != nil || !d.IsDir() {
+		if err == filepath.SkipDir && d.IsDir() {
+			// Successfully skipped directory.
+			err = nil
+		}
+		return err
+	}
+
+	var targetPath *string
+	dirToRead := path
+	if d.IsSymLink() {
+		symLinkTargetPath, err := d.SymLinkTargetPath()
+		if err := walkDirFn(*symLinkTargetPath, d, err); err != nil || !d.IsDir() {
+			if err == filepath.SkipDir && d.IsDir() {
+				// Successfully skipped directory.
+				err = nil
+			}
+			// TODO: is this right
 			return err
 		}
-		if err == nil && d.Type()&os.ModeSymlink == os.ModeSymlink {
-			finalPath, err := filepath.EvalSymlinks(path)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) || err.Error() == "EvalSymlinks: too many links" {
-					return fs.SkipDir
-				}
-				return fmt.Errorf("failed to eval symlink %s: %v", path, err)
-			}
-			if _, ok := (*symSet)[finalPath]; ok {
-				return fs.SkipDir
-			} else {
-				(*symSet)[finalPath] = struct{}{}
-			}
-			info, err := os.Lstat(finalPath)
-			if errors.Is(err, fs.ErrNotExist) {
-				return fs.SkipDir
-			}
-			if err != nil {
-				return walkFn(path, &statDirEntry{info}, err)
-			}
-			if info.IsDir() {
-				return walk(finalPath, path, symSet, walkFn)
-			}
-		}
-		if d.Type()&os.ModeDir == os.ModeDir && d.Name() == ".git" {
-			return fs.SkipDir
-		}
-		return walkFn(path, d, err)
+		targetPath = symLinkTargetPath
 	}
-	return filepath.WalkDir(filename, symWalkFunc)
+	dirs, err := readDir(dirToRead, targetPath)
+	if err != nil {
+		// Second call, to report ReadDir error.
+		err = walkDirFn(path, d, err)
+		if err != nil {
+			return err
+		}
+	}
+	for _, d1 := range dirs {
+		path1 := filepath.Join(path, d1.DirEntry().Name())
+		if err := walkDir(path1, d1, walkDirFn); err != nil {
+			if err == filepath.SkipDir {
+				break
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func readDir(dirname string, targetPath *string) ([]DirEntryEx, error) {
+	dirToRead := dirname
+	if targetPath != nil {
+		dirToRead = *targetPath
+	}
+	f, err := os.Open(dirToRead)
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			err = nil
+		}
+		return nil, err
+	}
+	dirs, err := f.ReadDir(-1)
+	_ = f.Close()
+	if err != nil {
+		return nil, err
+	}
+	dirsEx := make([]DirEntryEx, len(dirs))
+	for i, d := range dirs {
+		targetPath1 := targetPath
+		if targetPath1 != nil {
+			fullTargetPath := filepath.Join(*targetPath1, d.Name())
+			targetPath1 = &fullTargetPath
+		}
+		dirsEx[i] = &statDirEntryEx{d, filepath.Join(dirname, d.Name()), targetPath1, nil}
+	}
+	sort.Slice(dirsEx, func(i, j int) bool { return dirsEx[i].DirEntry().Name() < dirsEx[j].DirEntry().Name() })
+	return dirsEx, nil
+}
+
+type WalkDirFunc func(path string, d DirEntryEx, err error) error
+
+type DirEntryEx interface {
+	DirEntry() fs.DirEntry
+	IsSymLink() bool
+	IsDir() bool
+	SymLinkTargetPath() (*string, error)
+	SymLinkTargetEntry() fs.DirEntry
+}
+
+type statDirEntryEx struct {
+	entry       fs.DirEntry
+	path        string
+	targetPath  *string
+	targetEntry fs.DirEntry
+}
+
+func (d *statDirEntryEx) DirEntry() fs.DirEntry { return d.entry }
+func (d *statDirEntryEx) IsSymLink() bool {
+	return d.targetPath != nil || d.entry.Type()&os.ModeSymlink == os.ModeSymlink
+}
+func (d *statDirEntryEx) IsDir() bool {
+	if d.IsSymLink() {
+		return d.SymLinkTargetEntry().IsDir()
+	}
+	return d.entry.IsDir()
+}
+func (d *statDirEntryEx) SymLinkTargetPath() (*string, error) {
+	if !d.IsSymLink() {
+		return nil, nil
+	}
+	if d.targetPath == nil {
+		finalPath, err := filepath.EvalSymlinks(d.path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) || err.Error() == "EvalSymlinks: too many links" {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("failed to eval symlink %s: %v", d.path, err)
+		}
+		d.targetPath = &finalPath
+	}
+	return d.targetPath, nil
+}
+func (d *statDirEntryEx) SymLinkTargetEntry() fs.DirEntry {
+	if d.IsSymLink() {
+		if d.targetEntry != nil {
+			return d.targetEntry
+		}
+		targetPath, err := d.SymLinkTargetPath()
+		if targetPath != nil && err == nil {
+			lstat, err := os.Lstat(*targetPath)
+			if err == nil {
+				entry := fs.FileInfoToDirEntry(lstat)
+				d.targetEntry = &statDirEntry{entry}
+			} else {
+				d.targetEntry = d.entry
+			}
+		} else {
+			d.targetEntry = d.entry
+		}
+		return d.targetEntry
+	}
+	return nil
 }
 
 type statDirEntry struct {
-	info fs.FileInfo
+	info fs.DirEntry
 }
 
 func (d *statDirEntry) Name() string               { return d.info.Name() }
 func (d *statDirEntry) IsDir() bool                { return d.info.IsDir() }
-func (d *statDirEntry) Type() fs.FileMode          { return d.info.Mode().Type() }
-func (d *statDirEntry) Info() (fs.FileInfo, error) { return d.info, nil }
+func (d *statDirEntry) Type() fs.FileMode          { return d.info.Type() }
+func (d *statDirEntry) Info() (fs.FileInfo, error) { return d.info.Info() }
 
 func newZero() *int {
 	i := 0
 	return &i
 }
 
-func newArray() *[]string {
-	a := make([]string, 0)
+func newHitsSet() *map[string]struct{} {
+	a := map[string]struct{}{}
 	return &a
 }
 

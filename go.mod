@@ -4,7 +4,10 @@ go 1.17
 
 replace github.com/Sirupsen/logrus => github.com/sirupsen/logrus v1.8.1
 
-require github.com/spf13/cobra v1.2.1
+require (
+	github.com/bmatcuk/doublestar/v4 v4.0.2
+	github.com/spf13/cobra v1.2.1
+)
 
 require (
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
