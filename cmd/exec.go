@@ -90,7 +90,7 @@ indicates they can be exploited.  The scanner with also search within jar, zip, 
 		RunE:                  run,
 		DisableFlagsInUseLine: true,
 	}
-	root         string
+	roots        []string
 	hashesFile   string
 	printVersion bool
 	verbosity    int
@@ -100,7 +100,7 @@ indicates they can be exploited.  The scanner with also search within jar, zip, 
 func init() {
 	workingDir, _ := os.Getwd()
 	rootCmd.SetVersionTemplate(version.Print())
-	rootCmd.Flags().StringVarP(&root, "root", "r", workingDir, "Root directory to scan")
+	rootCmd.Flags().StringSliceVarP(&roots, "root", "r", []string{workingDir}, "Root directory to scan")
 	_ = rootCmd.MarkFlagDirname("root")
 	rootCmd.Flags().StringVar(&hashesFile, "hashes", "", "SHA256 hashes of vulnerable jars")
 	_ = rootCmd.MarkFlagFilename("hashes")
@@ -130,60 +130,62 @@ func run(_ *cobra.Command, _ []string) error {
 
 	totalScanned := newZero()
 	hits := newHitsSet()
-	err = WalkDir(root, func(path string, d DirEntryEx, err error) error {
+	for _, root := range roots {
+		err = WalkDir(root, func(path string, d DirEntryEx, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				if d.DirEntry().Name() == ".git" {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if !isIncluded(path) {
+				return nil
+			}
+			fileId, _ := filepath.Rel(root, path)
+			filePath := path
+			if d.IsSymLink() {
+				targetPath, err := d.SymLinkTargetPath()
+				if targetPath == nil || err != nil {
+					return err
+				}
+				filePath = *targetPath
+				relTargetPath, _ := filepath.Rel(path, filePath)
+				fileId = fmt.Sprintf("%s (%s)", fileId, relTargetPath)
+			}
+			if _, seen := (*hits)[filePath]; seen {
+				return nil
+			}
+			*totalScanned += 1
+			if strings.HasSuffix(filePath, ".jar") {
+				affected, err := checkJarFileHash(hashes, filePath)
+				if err != nil {
+					return fmt.Errorf("failed to read %s: %v", fileId, err)
+				}
+				if affected {
+					fmt.Printf("+++ %s\n", fileId)
+					(*hits)[path] = struct{}{}
+				} else if verbosity > 0 {
+					fmt.Printf("--- %s\n", fileId)
+				}
+				jarContentHits, total, err := scanJarContents(hashes, fileId, filePath)
+				*totalScanned += total
+				for _, h := range jarContentHits {
+					(*hits)[h] = struct{}{}
+				}
+				if err != nil {
+					return err
+				}
+			} else if verbosity > 1 {
+				fmt.Printf("### %s\n", filePath)
+			}
+			return nil
+		})
 		if err != nil {
 			return err
 		}
-		if d.IsDir() {
-			if d.DirEntry().Name() == ".git" {
-				return fs.SkipDir
-			}
-			return nil
-		}
-		if !isIncluded(path) {
-			return nil
-		}
-		fileId, _ := filepath.Rel(root, path)
-		filePath := path
-		if d.IsSymLink() {
-			targetPath, err := d.SymLinkTargetPath()
-			if targetPath == nil || err != nil {
-				return err
-			}
-			filePath = *targetPath
-			relTargetPath, _ := filepath.Rel(path, filePath)
-			fileId = fmt.Sprintf("%s (%s)", fileId, relTargetPath)
-		}
-		if _, seen := (*hits)[filePath]; seen {
-			return nil
-		}
-		*totalScanned += 1
-		if strings.HasSuffix(filePath, ".jar") {
-			affected, err := checkJarFileHash(hashes, filePath)
-			if err != nil {
-				return fmt.Errorf("failed to read %s: %v", fileId, err)
-			}
-			if affected {
-				fmt.Printf("+++ %s\n", fileId)
-				(*hits)[path] = struct{}{}
-			} else if verbosity > 0 {
-				fmt.Printf("--- %s\n", fileId)
-			}
-			jarContentHits, total, err := scanJarContents(hashes, fileId, filePath)
-			*totalScanned += total
-			for _, h := range jarContentHits {
-				(*hits)[h] = struct{}{}
-			}
-			if err != nil {
-				return err
-			}
-		} else if verbosity > 1 {
-			fmt.Printf("### %s\n", filePath)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
 	}
 	fmt.Printf("Total Files Scanned: %d\n", *totalScanned)
 	fmt.Printf("Total Affected Files: %d\n", len(*hits))
