@@ -21,6 +21,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"github.com/Masterminds/semver"
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/kadaan/log4shell-scanner/version"
 	"github.com/spf13/cobra"
@@ -77,6 +78,7 @@ e5e9b0f8d72f4e7b9022b7a83c673334d7967981191d2d98f9c57dc97b4caae1  ./apache-log4j
 68d793940c28ddff6670be703690dfdf9e77315970c42c4af40ca7261a8570fa  ./apache-log4j-2.14.0-bin/log4j-core-2.14.0.jar
 9da0f5ca7c8eab693d090ae759275b9db4ca5acdbcfe4a63d3871e0b17367463  ./apache-log4j-2.14.1-bin/log4j-core-2.14.1.jar
 006fc6623fbb961084243cfc327c885f3c57f2eba8ee05fbc4e93e5358778c85  ./log4j-2.0-alpha1/log4j-core-2.0-alpha1.jar`
+	DefaultJarPrefix = "log4j-core-"
 )
 
 var (
@@ -90,14 +92,18 @@ indicates they can be exploited.  The scanner with also search within jar, zip, 
 		RunE:                  run,
 		DisableFlagsInUseLine: true,
 	}
-	roots        []string
-	hashesFile   string
-	printVersion bool
-	verbosity    int
-	includeGlobs []string
+	roots             []string
+	hashesFile        string
+	printVersion      bool
+	verbosity         int
+	includeGlobs      []string
+	defaultVersionMin *semver.Version
+	defaultVersionMax *semver.Version
 )
 
 func init() {
+	defaultVersionMin = semver.MustParse("2.0-beta9")
+	defaultVersionMax = semver.MustParse("2.15.0")
 	workingDir, _ := os.Getwd()
 	rootCmd.SetVersionTemplate(version.Print())
 	rootCmd.Flags().StringSliceVarP(&roots, "root", "r", []string{workingDir}, "Root directory to scan")
@@ -160,12 +166,22 @@ func run(_ *cobra.Command, _ []string) error {
 			}
 			*totalScanned += 1
 			if strings.HasSuffix(filePath, ".jar") {
+				nameMatch, err := doesFilenameMatch(filePath)
+				if err != nil {
+					return fmt.Errorf("failed to check for filename match %s: %v", fileId, err)
+				}
 				affected, err := checkJarFileHash(hashes, filePath)
 				if err != nil {
 					return fmt.Errorf("failed to read %s: %v", fileId, err)
 				}
-				if affected {
+				if nameMatch && affected {
+					fmt.Printf("!!! %s\n", fileId)
+					(*hits)[path] = struct{}{}
+				} else if affected {
 					fmt.Printf("+++ %s\n", fileId)
+					(*hits)[path] = struct{}{}
+				} else if nameMatch {
+					fmt.Printf("@@@ %s\n", fileId)
 					(*hits)[path] = struct{}{}
 				} else if verbosity > 0 {
 					fmt.Printf("--- %s\n", fileId)
@@ -261,13 +277,23 @@ func scanJarContents(hashes map[string]struct{}, fileId string, filename string)
 	for _, file := range r.File {
 		total += 1
 		if strings.HasSuffix(file.Name, ".jar") {
+			nameMatch, err := doesFilenameMatch(file.Name)
+			if err != nil {
+				return hits, total, fmt.Errorf("failed to check for filename match %s ==> %s: %v", fileId, file.Name, err)
+			}
 			affected, err := checkJarContentFile(hashes, file)
 			if err != nil {
 				return hits, total, fmt.Errorf("failed to read %s ==> %s: %v", fileId, file.Name, err)
 			}
-			if affected {
+			if nameMatch && affected {
+				hits = append(hits, fmt.Sprintf("%s ==> %s", fileId, file.Name))
+				fmt.Printf("!!! %s ==> %s\n", fileId, file.Name)
+			} else if affected {
 				hits = append(hits, fmt.Sprintf("%s ==> %s", fileId, file.Name))
 				fmt.Printf("+++ %s ==> %s\n", fileId, file.Name)
+			} else if nameMatch {
+				hits = append(hits, fmt.Sprintf("%s ==> %s", fileId, file.Name))
+				fmt.Printf("@@@ %s ==> %s\n", fileId, file.Name)
 			} else if verbosity > 0 {
 				fmt.Printf("--- %s ==> %s\n", fileId, file.Name)
 			}
@@ -276,6 +302,30 @@ func scanJarContents(hashes map[string]struct{}, fileId string, filename string)
 		}
 	}
 	return hits, total, nil
+}
+
+func doesFilenameMatch(filename string) (bool, error) {
+	basename := filepath.Base(filename)
+	if strings.HasPrefix(basename, DefaultJarPrefix) {
+		basename = fileNameWithoutExtension(basename)
+		ver := basename[len(DefaultJarPrefix):]
+		semVersion, err := semver.NewVersion(ver)
+		if err != nil {
+			return false, err
+		}
+		if semVersion.Compare(defaultVersionMin) >= 0 && semVersion.Compare(defaultVersionMax) <= 0 {
+			return true, nil
+		}
+
+	}
+	return false, nil
+}
+
+func fileNameWithoutExtension(fileName string) string {
+	if pos := strings.LastIndexByte(fileName, '.'); pos != -1 {
+		return fileName[:pos]
+	}
+	return fileName
 }
 
 func checkJarContentFile(hashes map[string]struct{}, file *zip.File) (bool, error) {
