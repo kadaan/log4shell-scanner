@@ -246,7 +246,7 @@ func run(_ *cobra.Command, _ []string) error {
 				return err
 			}
 			*total += scanTotal
-			if scanHits != nil && len(scanHits) > 0 {
+			if len(scanHits) > 0 {
 				for _, h := range scanHits {
 					(*hits)[h] = struct{}{}
 				}
@@ -397,7 +397,7 @@ func scan(hashes map[string]struct{}, id string, source interface{}) ([]string, 
 				_ = rc.Close()
 			}(rc)
 			in := rc.(io.Reader)
-			if _, ok := in.(io.ReaderAt); ok != true {
+			if _, ok := in.(io.ReaderAt); !ok {
 				buffer, err := ioutil.ReadAll(in)
 				if err != nil {
 					return hits, total, fmt.Errorf("failed to open %s: %v", fileId, err)
@@ -467,11 +467,8 @@ func scan(hashes map[string]struct{}, id string, source interface{}) ([]string, 
 			return hits, total, err
 		}
 		total += scanTotal
-		if scanHits != nil && len(scanHits) > 0 {
-			contentMatch = true
-			for _, h := range scanHits {
-				hits = append(hits, h)
-			}
+		if len(scanHits) > 0 {
+			hits = append(hits, scanHits...)
 		}
 	}
 	matchType := ""
