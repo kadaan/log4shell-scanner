@@ -18,6 +18,7 @@ package cmd
 import (
 	"archive/zip"
 	"bufio"
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -27,6 +28,7 @@ import (
 	"github.com/spf13/cobra"
 	"io"
 	"io/fs"
+	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
@@ -78,7 +80,6 @@ e5e9b0f8d72f4e7b9022b7a83c673334d7967981191d2d98f9c57dc97b4caae1  ./apache-log4j
 68d793940c28ddff6670be703690dfdf9e77315970c42c4af40ca7261a8570fa  ./apache-log4j-2.14.0-bin/log4j-core-2.14.0.jar
 9da0f5ca7c8eab693d090ae759275b9db4ca5acdbcfe4a63d3871e0b17367463  ./apache-log4j-2.14.1-bin/log4j-core-2.14.1.jar
 006fc6623fbb961084243cfc327c885f3c57f2eba8ee05fbc4e93e5358778c85  ./log4j-2.0-alpha1/log4j-core-2.0-alpha1.jar`
-	DefaultJarPrefix = "log4j-core-"
 )
 
 var (
@@ -88,38 +89,113 @@ var (
 		Long: `log4shell-scanner recursively scans a filesystem looking for jars with a has that 
 indicates they can be exploited.  The scanner with also search within jar, zip, and gzip archive.`,
 		Example:               `log4shell-scanner --root=.`,
-		PreRun:                pre,
+		PreRunE:               pre,
 		RunE:                  run,
 		DisableFlagsInUseLine: true,
 	}
-	roots             []string
-	hashesFile        string
-	printVersion      bool
-	verbosity         int
-	includeGlobs      []string
-	defaultVersionMin *semver.Version
-	defaultVersionMax *semver.Version
+	roots         []string
+	hashesFile    string
+	printVersion  bool
+	verbosity     int
+	classes       []string
+	includeGlobs  []string
+	jars          []string
+	classMatchers []string
+	jarMatchers   []jarFilenameMatcher
 )
 
 func init() {
-	defaultVersionMin = semver.MustParse("2.0-beta9")
-	defaultVersionMax = semver.MustParse("2.15.0")
 	workingDir, _ := os.Getwd()
 	rootCmd.SetVersionTemplate(version.Print())
 	rootCmd.Flags().StringSliceVarP(&roots, "root", "r", []string{workingDir}, "Root directory to scan")
 	_ = rootCmd.MarkFlagDirname("root")
-	rootCmd.Flags().StringVar(&hashesFile, "hashes", "", "SHA256 hashes of vulnerable jars")
+	rootCmd.Flags().StringVar(&hashesFile, "hashes", "", "SHA256 hashes of jars to match")
 	_ = rootCmd.MarkFlagFilename("hashes")
+	rootCmd.Flags().StringSliceVar(&jars, "jars", []string{"log4j-core-/2.0-beta9/2.15.0"}, "Jar name and semver range to match")
+	rootCmd.Flags().StringSliceVar(&classes, "classes", []string{"JndiLookup"}, "Classes to match")
 	rootCmd.Flags().StringSliceVar(&includeGlobs, "include-globs", []string{"**/**"}, "Globs that indicate which path to include in the scan")
 	rootCmd.Flags().CountVarP(&verbosity, "verbose", "v", "Verbose logging")
 	rootCmd.Flags().BoolVar(&printVersion, "version", false, "Print version")
 }
 
-func pre(_ *cobra.Command, _ []string) {
+type jarFilenameMatcher struct {
+	name      string
+	minSemver *semver.Version
+	maxSemver *semver.Version
+}
+
+func (m *jarFilenameMatcher) isMatch(filename string) (bool, error) {
+	if strings.HasPrefix(filename, m.name) {
+		filename = fileNameWithoutExtension(filename)
+		if m.minSemver != nil || m.maxSemver != nil {
+			ver := filename[len(m.name):]
+			semVersion, err := semver.NewVersion(ver)
+			if err != nil {
+				return false, err
+			}
+			if m.minSemver != nil && m.maxSemver != nil {
+				if semVersion.Compare(m.minSemver) >= 0 && semVersion.Compare(m.maxSemver) <= 0 {
+					return true, nil
+				}
+			} else if m.minSemver != nil {
+				if semVersion.Compare(m.minSemver) >= 0 {
+					return true, nil
+				}
+
+			} else if m.maxSemver != nil {
+				if semVersion.Compare(m.maxSemver) <= 0 {
+					return true, nil
+				}
+			}
+		}
+	}
+	return false, nil
+}
+
+func pre(_ *cobra.Command, _ []string) error {
 	if printVersion {
 		_, _ = fmt.Fprintf(os.Stdout, "%s\n", version.Print())
 		os.Exit(0)
 	}
+
+	for _, c := range classes {
+		if strings.HasSuffix(c, ".class") {
+			classMatchers = append(classMatchers, fmt.Sprintf("%s.class", c))
+		} else {
+			classMatchers = append(classMatchers, c)
+		}
+	}
+
+	for _, j := range jars {
+		parts := strings.SplitN(j, "/", 3)
+		if parts != nil {
+			name := parts[0]
+			if !strings.HasSuffix(name, "-") {
+				name = fmt.Sprintf("%s-", name)
+			}
+			var err error
+			var minSemver *semver.Version
+			var maxSemver *semver.Version
+			if len(parts) > 1 {
+				if len(parts[1]) > 0 {
+					minSemver, err = semver.NewVersion(parts[1])
+					if err != nil {
+						return fmt.Errorf("invalid minimum semantic version in %s: %v", j, err)
+					}
+				}
+			}
+			if len(parts) == 3 {
+				if len(parts[2]) > 0 {
+					maxSemver, err = semver.NewVersion(parts[2])
+					if err != nil {
+						return fmt.Errorf("invalid maximum semantic version in %s: %v", j, err)
+					}
+				}
+			}
+			jarMatchers = append(jarMatchers, jarFilenameMatcher{name: name, minSemver: minSemver, maxSemver: maxSemver})
+		}
+	}
+	return nil
 }
 
 func run(_ *cobra.Command, _ []string) error {
@@ -134,7 +210,7 @@ func run(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("failed to load hashes: %v", err)
 	}
 
-	totalScanned := newZero()
+	total := newZero()
 	hits := newHitsSet()
 	for _, root := range roots {
 		err = WalkDir(root, func(path string, d DirEntryEx, err error) error {
@@ -164,38 +240,16 @@ func run(_ *cobra.Command, _ []string) error {
 			if _, seen := (*hits)[filePath]; seen {
 				return nil
 			}
-			*totalScanned += 1
-			if strings.HasSuffix(filePath, ".jar") {
-				nameMatch, err := doesFilenameMatch(filePath)
-				if err != nil {
-					return fmt.Errorf("failed to check for filename match %s: %v", fileId, err)
-				}
-				affected, err := checkJarFileHash(hashes, filePath)
-				if err != nil {
-					return fmt.Errorf("failed to read %s: %v", fileId, err)
-				}
-				if nameMatch && affected {
-					fmt.Printf("!!! %s\n", fileId)
-					(*hits)[path] = struct{}{}
-				} else if affected {
-					fmt.Printf("+++ %s\n", fileId)
-					(*hits)[path] = struct{}{}
-				} else if nameMatch {
-					fmt.Printf("@@@ %s\n", fileId)
-					(*hits)[path] = struct{}{}
-				} else if verbosity > 0 {
-					fmt.Printf("--- %s\n", fileId)
-				}
-				jarContentHits, total, err := scanJarContents(hashes, fileId, filePath)
-				*totalScanned += total
-				for _, h := range jarContentHits {
+			*total += 1
+			scanHits, scanTotal, err := scan(hashes, fileId, filePath)
+			if err != nil {
+				return err
+			}
+			*total += scanTotal
+			if scanHits != nil && len(scanHits) > 0 {
+				for _, h := range scanHits {
 					(*hits)[h] = struct{}{}
 				}
-				if err != nil {
-					return err
-				}
-			} else if verbosity > 1 {
-				fmt.Printf("### %s\n", filePath)
 			}
 			return nil
 		})
@@ -203,7 +257,7 @@ func run(_ *cobra.Command, _ []string) error {
 			return err
 		}
 	}
-	fmt.Printf("Total Files Scanned: %d\n", *totalScanned)
+	fmt.Printf("Total Files Scanned: %d\n", *total)
 	fmt.Printf("Total Affected Files: %d\n", len(*hits))
 	fmt.Println("Affected Files: ")
 	if len(*hits) > 0 {
@@ -260,63 +314,199 @@ func getHashes() (map[string]struct{}, error) {
 	return hashes, nil
 }
 
-func scanJarContents(hashes map[string]struct{}, fileId string, filename string) ([]string, int, error) {
+type ContentReader interface {
+	GetFiles() []*zip.File
+	Filename() string
+	GetReader() io.Reader
+}
+
+type ZipContentReader struct {
+	zipReader *zip.Reader
+	reader    io.Reader
+	filename  string
+}
+
+func (r ZipContentReader) GetFiles() []*zip.File {
+	return r.zipReader.File
+}
+
+func (r ZipContentReader) Filename() string {
+	return r.filename
+}
+
+func (r ZipContentReader) GetReader() io.Reader {
+	return r.reader
+}
+
+type ZipReader struct {
+	zipReader *zip.ReadCloser
+	reader    io.Reader
+	filename  string
+}
+
+func (r ZipReader) GetFiles() []*zip.File {
+	return r.zipReader.File
+}
+
+func (r ZipReader) Filename() string {
+	return r.filename
+}
+
+func (r ZipReader) GetReader() io.Reader {
+	return r.reader
+}
+
+func scan(hashes map[string]struct{}, id string, source interface{}) ([]string, int, error) {
 	total := 0
 	var hits []string
-	r, err := zip.OpenReader(filename)
-	if err != nil {
-		if err.Error() != "zip: not a valid zip file" {
-			return hits, 0, fmt.Errorf("failed to open %s: %v", fileId, err)
+	var err error
+	var reader ContentReader
+	fileId := id
+	if zfile, ok := source.(*zip.File); ok {
+		fileId = fmt.Sprintf("%s @ %s", fileId, zfile.Name)
+		if zfile.FileInfo().IsDir() {
+			if verbosity > 1 {
+				fmt.Printf("### %s\n", fileId)
+			}
+			return hits, total, nil
+		}
+		classMatch := ""
+		basename := filepath.Base(zfile.Name)
+		for _, classMatcher := range classMatchers {
+			match := basename == classMatcher
+			if match {
+				classMatch = basename
+				break
+			}
+		}
+		if len(classMatch) > 0 {
+			fileId = fmt.Sprintf("%s # %s", fileId, classMatch)
+			fmt.Printf("+++ %s\n", fileId)
+			return []string{fileId}, 1, err
+		}
+		if strings.HasSuffix(zfile.Name, ".jar") {
+			rc, err := zfile.Open()
+			if err != nil {
+				if err.Error() != "zip: not a valid zip file" {
+					return hits, total, fmt.Errorf("failed to open %s: %v", fileId, err)
+				} else {
+					return hits, total, nil
+				}
+			}
+			defer func(rc io.ReadCloser) {
+				_ = rc.Close()
+			}(rc)
+			in := rc.(io.Reader)
+			if _, ok := in.(io.ReaderAt); ok != true {
+				buffer, err := ioutil.ReadAll(in)
+				if err != nil {
+					return hits, total, fmt.Errorf("failed to open %s: %v", fileId, err)
+				}
+
+				in = bytes.NewReader(buffer)
+			}
+			zr, err := zip.NewReader(in.(io.ReaderAt), int64(zfile.UncompressedSize64))
+			if err != nil {
+				return hits, total, fmt.Errorf("failed to create zip reader %s: %v", fileId, err)
+			}
+			r, err := zfile.OpenRaw()
+			if err != nil {
+				return hits, total, fmt.Errorf("failed to open raw %s: %v", fileId, err)
+			}
+			defer func(r io.Reader) {
+				_ = rc.Close()
+			}(r)
+			reader = ZipContentReader{zr, r, zfile.Name}
 		} else {
-			return hits, 0, nil
+			if verbosity > 1 {
+				fmt.Printf("### %s\n", fileId)
+			}
+			return hits, total, nil
+		}
+	} else if filename, ok := source.(string); ok {
+		if strings.HasSuffix(filename, ".jar") {
+			rc, err := zip.OpenReader(filename)
+			if err != nil {
+				if err.Error() != "zip: not a valid zip file" {
+					return hits, total, fmt.Errorf("failed to open %s: %v", fileId, err)
+				} else {
+					return hits, total, nil
+				}
+			}
+			defer func(z *zip.ReadCloser) {
+				_ = z.Close()
+			}(rc)
+			f, err := os.Open(filename)
+			if err != nil {
+				return hits, total, fmt.Errorf("failed to open file %s: %v", fileId, err)
+			}
+			defer func(f *os.File) {
+				_ = f.Close()
+			}(f)
+			reader = ZipReader{rc, f, filename}
+		} else {
+			if verbosity > 1 {
+				fmt.Printf("### %s\n", fileId)
+			}
+			return hits, total, nil
 		}
 	}
-	defer func(z *zip.ReadCloser) {
-		_ = z.Close()
-	}(r)
-	for _, file := range r.File {
+	contentMatch := false
+	nameMatch, err := doesFilenameMatch(reader.Filename())
+	if err != nil {
+		return hits, total, fmt.Errorf("failed to check for filename match %s: %v", fileId, err)
+	}
+	hashMatch, err := checkHash(hashes, reader.GetReader())
+	if err != nil {
+		return hits, total, fmt.Errorf("failed to check for hash match %s: %v", fileId, err)
+	}
+	for _, f := range reader.GetFiles() {
 		total += 1
-		if strings.HasSuffix(file.Name, ".jar") {
-			nameMatch, err := doesFilenameMatch(file.Name)
-			if err != nil {
-				return hits, total, fmt.Errorf("failed to check for filename match %s ==> %s: %v", fileId, file.Name, err)
-			}
-			affected, err := checkJarContentFile(hashes, file)
-			if err != nil {
-				return hits, total, fmt.Errorf("failed to read %s ==> %s: %v", fileId, file.Name, err)
-			}
-			if nameMatch && affected {
-				hits = append(hits, fmt.Sprintf("%s ==> %s", fileId, file.Name))
-				fmt.Printf("!!! %s ==> %s\n", fileId, file.Name)
-			} else if affected {
-				hits = append(hits, fmt.Sprintf("%s ==> %s", fileId, file.Name))
-				fmt.Printf("+++ %s ==> %s\n", fileId, file.Name)
-			} else if nameMatch {
-				hits = append(hits, fmt.Sprintf("%s ==> %s", fileId, file.Name))
-				fmt.Printf("@@@ %s ==> %s\n", fileId, file.Name)
-			} else if verbosity > 0 {
-				fmt.Printf("--- %s ==> %s\n", fileId, file.Name)
-			}
-		} else if verbosity > 1 {
-			fmt.Printf("### %s ==> %s\n", fileId, file.Name)
+		scanHits, scanTotal, err := scan(hashes, fileId, f)
+		if err != nil {
+			return hits, total, err
 		}
+		total += scanTotal
+		if scanHits != nil && len(scanHits) > 0 {
+			contentMatch = true
+			for _, h := range scanHits {
+				hits = append(hits, h)
+			}
+		}
+	}
+	matchType := ""
+	if nameMatch {
+		matchType = "NAME "
+	}
+	if hashMatch {
+		matchType = fmt.Sprintf("%sHASH ", matchType)
+	}
+	if contentMatch {
+		matchType = fmt.Sprintf("%sCONTENT ", matchType)
+	}
+
+	if len(matchType) > 0 {
+		total += 1
+		hits = append(hits, fileId)
+		fmt.Printf("+++ (%s) %s\n", matchType[:len(matchType)-1], fileId)
+	} else if verbosity > 0 {
+		fmt.Printf("--- %s\n", fileId)
 	}
 	return hits, total, nil
 }
 
 func doesFilenameMatch(filename string) (bool, error) {
-	basename := filepath.Base(filename)
-	if strings.HasPrefix(basename, DefaultJarPrefix) {
-		basename = fileNameWithoutExtension(basename)
-		ver := basename[len(DefaultJarPrefix):]
-		semVersion, err := semver.NewVersion(ver)
-		if err != nil {
-			return false, err
+	if len(jarMatchers) > 0 {
+		basename := filepath.Base(filename)
+		for _, m := range jarMatchers {
+			match, err := m.isMatch(basename)
+			if err != nil {
+				return false, err
+			}
+			if match {
+				return true, nil
+			}
 		}
-		if semVersion.Compare(defaultVersionMin) >= 0 && semVersion.Compare(defaultVersionMax) <= 0 {
-			return true, nil
-		}
-
 	}
 	return false, nil
 }
@@ -328,34 +518,7 @@ func fileNameWithoutExtension(fileName string) string {
 	return fileName
 }
 
-func checkJarContentFile(hashes map[string]struct{}, file *zip.File) (bool, error) {
-	r, err := file.Open()
-	if err != nil {
-		return false, err
-	}
-	defer func(r io.ReadCloser) {
-		_ = r.Close()
-	}(r)
-
-	affected, err := checkJarHash(hashes, r)
-	if err != nil {
-		return false, err
-	}
-	return affected, nil
-}
-
-func checkJarFileHash(hashes map[string]struct{}, name string) (bool, error) {
-	f, err := os.Open(name)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer func(f *os.File) {
-		_ = f.Close()
-	}(f)
-	return checkJarHash(hashes, f)
-}
-
-func checkJarHash(hashes map[string]struct{}, reader io.Reader) (bool, error) {
+func checkHash(hashes map[string]struct{}, reader io.Reader) (bool, error) {
 	h := sha256.New()
 	if _, err := io.Copy(h, reader); err != nil {
 		return false, err
@@ -384,7 +547,6 @@ func WalkDir(root string, fn WalkDirFunc) error {
 func walkDir(path string, d DirEntryEx, walkDirFn WalkDirFunc) error {
 	if err := walkDirFn(path, d, nil); err != nil || !d.IsDir() {
 		if err == filepath.SkipDir && d.IsDir() {
-			// Successfully skipped directory.
 			err = nil
 		}
 		return err
@@ -396,17 +558,14 @@ func walkDir(path string, d DirEntryEx, walkDirFn WalkDirFunc) error {
 		symLinkTargetPath, err := d.SymLinkTargetPath()
 		if err := walkDirFn(*symLinkTargetPath, d, err); err != nil || !d.IsDir() {
 			if err == filepath.SkipDir && d.IsDir() {
-				// Successfully skipped directory.
 				err = nil
 			}
-			// TODO: is this right
 			return err
 		}
 		targetPath = symLinkTargetPath
 	}
 	dirs, err := readDir(dirToRead, targetPath)
 	if err != nil {
-		// Second call, to report ReadDir error.
 		err = walkDirFn(path, d, err)
 		if err != nil {
 			return err
