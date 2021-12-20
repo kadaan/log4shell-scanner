@@ -247,8 +247,14 @@ func run(_ *cobra.Command, _ []string) error {
 			}
 			*total += scanTotal
 			if len(scanHits) > 0 {
-				for _, h := range scanHits {
-					(*hits)[h] = struct{}{}
+				for k, v := range scanHits {
+					if _, ok := (*hits)[k]; ok {
+						for m, z := range v {
+							(*hits)[k][m] = z
+						}
+					} else {
+						(*hits)[k] = v
+					}
 				}
 			}
 			return nil
@@ -259,10 +265,33 @@ func run(_ *cobra.Command, _ []string) error {
 	}
 	fmt.Printf("Total Files Scanned: %d\n", *total)
 	fmt.Printf("Total Affected Files: %d\n", len(*hits))
+	contentMatches := 0
+	hashMatches := 0
+	nameMatches := 0
+	classMatches := 0
+	if len(*hits) > 0 {
+		for _, matchTypes := range *hits {
+			for matchType, _ := range matchTypes {
+				if matchType == "CONTENT" {
+					contentMatches++
+				} else if matchType == "HASH" {
+					hashMatches++
+				} else if matchType == "NAME/VERSION" {
+					nameMatches++
+				} else if matchType == "CLASS" {
+					classMatches++
+				}
+			}
+		}
+	}
+	fmt.Printf("    Hash Matches: %d\n", hashMatches)
+	fmt.Printf("    Class Matches: %d\n", classMatches)
+	fmt.Printf("    Content Matches: %d\n", contentMatches)
+	fmt.Printf("    Name/Version Matches: %d\n", nameMatches)
 	fmt.Println("Affected Files: ")
 	if len(*hits) > 0 {
-		for hit := range *hits {
-			fmt.Printf("    %s\n", hit)
+		for hit, matchTypes := range *hits {
+			fmt.Printf("    %s%s\n", printMatchType(matchTypes), hit)
 		}
 	} else {
 		fmt.Println("    NONE")
@@ -356,9 +385,9 @@ func (r ZipReader) GetReader() io.Reader {
 	return r.reader
 }
 
-func scan(hashes map[string]struct{}, id string, source interface{}) ([]string, int, error) {
+func scan(hashes map[string]struct{}, id string, source interface{}) (map[string]map[string]struct{}, int, error) {
 	total := 0
-	var hits []string
+	hits := map[string]map[string]struct{}{}
 	var err error
 	var reader ContentReader
 	fileId := id
@@ -370,6 +399,7 @@ func scan(hashes map[string]struct{}, id string, source interface{}) ([]string, 
 			}
 			return hits, total, nil
 		}
+		total += 1
 		classMatch := ""
 		basename := filepath.Base(zfile.Name)
 		for _, classMatcher := range classMatchers {
@@ -382,7 +412,7 @@ func scan(hashes map[string]struct{}, id string, source interface{}) ([]string, 
 		if len(classMatch) > 0 {
 			fileId = fmt.Sprintf("%s # %s", fileId, classMatch)
 			fmt.Printf("+++ %s\n", fileId)
-			return []string{fileId}, 1, err
+			return map[string]map[string]struct{}{fileId: {"CLASS": struct{}{}}}, total, err
 		}
 		if strings.HasSuffix(zfile.Name, ".jar") {
 			rc, err := zfile.Open()
@@ -424,6 +454,7 @@ func scan(hashes map[string]struct{}, id string, source interface{}) ([]string, 
 			return hits, total, nil
 		}
 	} else if filename, ok := source.(string); ok {
+		total += 1
 		if strings.HasSuffix(filename, ".jar") {
 			rc, err := zip.OpenReader(filename)
 			if err != nil {
@@ -468,28 +499,45 @@ func scan(hashes map[string]struct{}, id string, source interface{}) ([]string, 
 		}
 		total += scanTotal
 		if len(scanHits) > 0 {
-			hits = append(hits, scanHits...)
+			contentMatch = true
+			for k, v := range scanHits {
+				if _, ok := hits[k]; ok {
+					for m, z := range v {
+						hits[k][m] = z
+					}
+				} else {
+					hits[k] = v
+				}
+			}
 		}
 	}
-	matchType := ""
+	matchTypes := map[string]struct{}{}
 	if nameMatch {
-		matchType = "NAME "
+		matchTypes["NAME/VERSION"] = struct{}{}
 	}
 	if hashMatch {
-		matchType = fmt.Sprintf("%sHASH ", matchType)
+		matchTypes["HASH"] = struct{}{}
 	}
 	if contentMatch {
-		matchType = fmt.Sprintf("%sCONTENT ", matchType)
+		matchTypes["CONTENT"] = struct{}{}
 	}
 
-	if len(matchType) > 0 {
+	if len(matchTypes) > 0 {
 		total += 1
-		hits = append(hits, fileId)
-		fmt.Printf("+++ (%s) %s\n", matchType[:len(matchType)-1], fileId)
+		hits[fileId] = matchTypes
+		fmt.Printf("+++ %s%s\n", printMatchType(matchTypes), fileId)
 	} else if verbosity > 0 {
 		fmt.Printf("--- %s\n", fileId)
 	}
 	return hits, total, nil
+}
+
+func printMatchType(matchTypes map[string]struct{}) string {
+	keys := make([]string, 0, len(matchTypes))
+	for k := range matchTypes {
+		keys = append(keys, k)
+	}
+	return "(" + strings.Join(keys, " ") + ") "
 }
 
 func doesFilenameMatch(filename string) (bool, error) {
@@ -689,8 +737,8 @@ func newZero() *int {
 	return &i
 }
 
-func newHitsSet() *map[string]struct{} {
-	a := map[string]struct{}{}
+func newHitsSet() *map[string]map[string]struct{} {
+	a := map[string]map[string]struct{}{}
 	return &a
 }
 
