@@ -271,7 +271,7 @@ func run(_ *cobra.Command, _ []string) error {
 	classMatches := 0
 	if len(*hits) > 0 {
 		for _, matchTypes := range *hits {
-			for matchType, _ := range matchTypes {
+			for matchType := range matchTypes {
 				if matchType == "CONTENT" {
 					contentMatches++
 				} else if matchType == "HASH" {
