@@ -160,9 +160,9 @@ func pre(_ *cobra.Command, _ []string) error {
 
 	for _, c := range classes {
 		if strings.HasSuffix(c, ".class") {
-			classMatchers = append(classMatchers, fmt.Sprintf("%s.class", c))
-		} else {
 			classMatchers = append(classMatchers, c)
+		} else {
+			classMatchers = append(classMatchers, fmt.Sprintf("%s.class", c))
 		}
 	}
 
