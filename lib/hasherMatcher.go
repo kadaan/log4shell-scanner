@@ -17,16 +17,12 @@ package lib
 
 import (
 	"bufio"
-	"crypto/sha256"
-	"fmt"
-	"io"
 	"log"
 	"os"
 	"strings"
 )
 
 type HashMatcher interface {
-	IsMatch(reader io.Reader) (bool, error)
 	IsHashMatch(hash string) bool
 }
 
@@ -68,15 +64,6 @@ func newHashMatcher(scn *bufio.Scanner) (HashMatcher, error) {
 		return nil, err
 	}
 	return &hashMatcher{hashes: hashes}, nil
-}
-
-func (h *hashMatcher) IsMatch(reader io.Reader) (bool, error) {
-	s256 := sha256.New()
-	if _, err := io.Copy(s256, reader); err != nil {
-		return false, err
-	}
-	hash := fmt.Sprintf("%x", s256.Sum(nil))
-	return h.IsHashMatch(hash), nil
 }
 
 func (h *hashMatcher) IsHashMatch(hash string) bool {

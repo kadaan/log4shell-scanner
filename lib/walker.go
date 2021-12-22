@@ -36,10 +36,11 @@ type Walker interface {
 
 type walker struct {
 	includeGlobs []string
+	seenPaths    map[string]struct{}
 }
 
 func NewWalker(includeGlobs []string) Walker {
-	return &walker{includeGlobs: includeGlobs}
+	return &walker{includeGlobs: includeGlobs, seenPaths: map[string]struct{}{}}
 }
 
 func (w *walker) WalkDirs(fn WalkDirFunc, roots ...string) error {
@@ -78,6 +79,13 @@ func (w *walker) WalkDirs(fn WalkDirFunc, roots ...string) error {
 }
 
 func (w *walker) walkDirEx(fn WalkDirFunc, root string, path string, d DirEntryEx, err error) error {
+	if _, seen := w.seenPaths[path]; seen {
+		if d.IsDir() {
+			return fs.SkipDir
+		}
+		return nil
+	}
+	w.seenPaths[path] = struct{}{}
 	if d.IsDir() {
 		if d.DirEntry().Name() == ".git" {
 			return fs.SkipDir
@@ -94,10 +102,17 @@ func (w *walker) walkDirEx(fn WalkDirFunc, root string, path string, d DirEntryE
 		if targetPath == nil || err != nil {
 			return err
 		}
+		//if d.SymLinkTargetEntry().IsDir() {
+		//	if d.DirEntry().Name() == ".git" {
+		//		return fs.SkipDir
+		//	}
+		//	return nil
+		//}
 		filePath = *targetPath
 		relTargetPath, _ := filepath.Rel(path, filePath)
 		fileId = fmt.Sprintf("%s (%s)", fileId, relTargetPath)
 	}
+	w.seenPaths[filePath] = struct{}{}
 	return fn(fileId, filePath)
 }
 

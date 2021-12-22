@@ -93,32 +93,6 @@ func GetContentReader(filename string, size int64, reader ContentFileReader) (Co
 	return nil, nil
 }
 
-type ReadReaderAt interface {
-	io.Reader
-	io.ReaderAt
-}
-
-type ReadReaderAtCloser interface {
-	ReadReaderAt
-	io.Closer
-}
-
-type BytesReadReaderAtCloser struct {
-	bytesReader *bytes.Reader
-}
-
-func (b BytesReadReaderAtCloser) Read(p []byte) (n int, err error) {
-	return b.bytesReader.Read(p)
-}
-
-func (b BytesReadReaderAtCloser) ReadAt(p []byte, off int64) (n int, err error) {
-	return b.bytesReader.ReadAt(p, off)
-}
-
-func (b BytesReadReaderAtCloser) Close() error {
-	return nil
-}
-
 type NoopCloseReader struct {
 	reader io.Reader
 }
