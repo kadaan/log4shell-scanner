@@ -167,6 +167,7 @@ func (s *ScanResult) HasSeen(path string) bool {
 }
 
 func (s *ScanResult) Merge(result ScanResult) bool {
+	hadMatches := false
 	s.totalFilesScanned += result.totalFilesScanned
 	if len(result.matches) > 0 {
 		for k, v := range result.matches {
@@ -178,7 +179,7 @@ func (s *ScanResult) Merge(result ScanResult) bool {
 				s.matches[k] = v
 			}
 		}
-		return true
+		hadMatches = true
 	}
 	if len(result.failures) > 0 {
 		for k, v := range result.failures {
@@ -190,9 +191,8 @@ func (s *ScanResult) Merge(result ScanResult) bool {
 				s.failures[k] = v
 			}
 		}
-		return true
 	}
-	return false
+	return hadMatches
 }
 
 func (s *ScanResult) AddMatch(id string, types ...MatchType) {
