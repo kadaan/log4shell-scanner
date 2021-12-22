@@ -27,6 +27,7 @@ import (
 
 type HashMatcher interface {
 	IsMatch(reader io.Reader) (bool, error)
+	IsHashMatch(hash string) bool
 }
 
 type hashMatcher struct {
@@ -75,8 +76,10 @@ func (h *hashMatcher) IsMatch(reader io.Reader) (bool, error) {
 		return false, err
 	}
 	hash := fmt.Sprintf("%x", s256.Sum(nil))
-	if _, match := h.hashes[hash]; match {
-		return true, nil
-	}
-	return false, nil
+	return h.IsHashMatch(hash), nil
+}
+
+func (h *hashMatcher) IsHashMatch(hash string) bool {
+	_, match := h.hashes[hash]
+	return match
 }

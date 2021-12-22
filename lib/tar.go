@@ -20,93 +20,80 @@ import (
 	"io"
 )
 
-type TarFile struct {
+type tarFile struct {
 	header *tar.Header
-	reader *tar.Reader
+	reader ContentFileReader
 }
 
-func (t TarFile) Name() string {
+func NewTarFile(header *tar.Header, r *tar.Reader) (ContentFile, error) {
+	reader, err := NewContentFileReader(NoopCloseReader{r})
+	if err != nil {
+		return nil, err
+	}
+	contentFileReader, err := NewContentFileReader(reader)
+	if err != nil {
+		_ = reader.Close()
+		return nil, err
+	}
+	return &tarFile{header: header, reader: contentFileReader}, nil
+}
+
+func (t *tarFile) Name() string {
 	return t.header.Name
 }
 
-func (t TarFile) UncompressedSize() int64 {
+func (t *tarFile) UncompressedSize() int64 {
 	return t.header.Size
 }
 
-func (t TarFile) IsDir() bool {
+func (t *tarFile) IsDir() bool {
 	return t.header.Typeflag == tar.TypeDir
 }
 
-func (t TarFile) GetContentReader() (ContentReader, error) {
-	return TarContentReader{t.reader, t.Name()}, nil
+func (t *tarFile) GetReader() ContentFileReader {
+	return t.reader
 }
 
-func (t TarFile) GetReader() (io.ReadCloser, error) {
-	return TarFileReadCloser{t.reader}, nil
+func (t *tarFile) Close() error {
+	return t.reader.Close()
 }
 
-type TarFileReadCloser struct {
-	reader *tar.Reader
+type tarReader struct {
+	reader            *tar.Reader
+	contentFileReader ContentFileReader
+	filename          string
 }
 
-func (t TarFileReadCloser) Read(p []byte) (n int, err error) {
-	return t.reader.Read(p)
-}
-
-func (t TarFileReadCloser) Close() error {
-	return nil
-}
-
-type TarContentReader struct {
-	reader   *tar.Reader
-	filename string
-}
-
-func (r TarContentReader) GetFiles() FileIterable {
-	return TarReaderFileIterable{
-		reader: r.reader,
+func NewTarReader(filename string, reader *tar.Reader, contentFileReader ContentFileReader) ContentReader {
+	return &tarReader{
+		reader:            reader,
+		contentFileReader: contentFileReader,
+		filename:          filename,
 	}
 }
 
-func (r TarContentReader) Filename() string {
+func (r *tarReader) GetFiles() FileIterable {
+	return &tarReaderFileIterable{filename: r.filename, reader: r.reader}
+}
+
+func (r *tarReader) Filename() string {
 	return r.filename
 }
 
-func (r TarContentReader) GetReader() io.Reader {
-	return r.reader
+func (r *tarReader) GetHash() (string, error) {
+	return r.contentFileReader.GetHash()
 }
 
-func (r TarContentReader) Close() error {
-	return nil
+func (r *tarReader) Close() error {
+	return r.contentFileReader.Close()
 }
 
-type TarReader struct {
-	reader   *tar.Reader
-	file     io.ReadCloser
+type tarReaderFileIterable struct {
 	filename string
+	reader   *tar.Reader
 }
 
-func (r TarReader) GetFiles() FileIterable {
-	return TarReaderFileIterable{reader: r.reader}
-}
-
-func (r TarReader) Filename() string {
-	return r.filename
-}
-
-func (r TarReader) GetReader() io.Reader {
-	return r.reader
-}
-
-func (r TarReader) Close() error {
-	return r.file.Close()
-}
-
-type TarReaderFileIterable struct {
-	reader *tar.Reader
-}
-
-func (i TarReaderFileIterable) Next() (interface{}, error) {
+func (i *tarReaderFileIterable) Next() (interface{}, error) {
 	for {
 		next, err := i.reader.Next()
 		if err == io.EOF {
@@ -118,9 +105,6 @@ func (i TarReaderFileIterable) Next() (interface{}, error) {
 		if next.Typeflag != tar.TypeReg || next.Size == 0 {
 			continue
 		}
-		return TarFile{
-			header: next,
-			reader: i.reader,
-		}, nil
+		return NewTarFile(next, i.reader)
 	}
 }

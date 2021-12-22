@@ -36,51 +36,59 @@ func GetContentReaderFromFile(filename string) (ContentReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	reader, err := GetContentReader(filename, stat.Size(), f)
+	fileReader, err := NewContentFileReader(f)
+	if err != nil {
+		return nil, err
+	}
+	reader, err := GetContentReader(filename, stat.Size(), fileReader)
 	if err != nil || reader == nil {
 		_ = f.Close()
 	}
 	return reader, err
 }
 
-func GetContentReader(filename string, size int64, reader ReadReaderAtCloser) (ContentReader, error) {
-	var header = make([]byte, 262)
-	_, err := reader.ReadAt(header, 0)
-	if err != nil && err != io.EOF {
-		return nil, fmt.Errorf("unable to read header from %s:\n%v", filename, err)
-	}
-	kind, _ := filetype.Match(header)
+func GetContentReader(filename string, size int64, reader ContentFileReader) (ContentReader, error) {
+	kind, _ := filetype.Match(reader.GetHeader())
 	switch kind.Extension {
 	case "tar":
 		tarReader := tar.NewReader(reader)
 		_, err := tarReader.Next()
 		if err != nil {
-			return nil, fmt.Errorf("unable to open tar file %s:\n%v", filename, err)
+			return nil, fmt.Errorf("unable to open tar file: %v", err)
 		}
-		return &TarReader{
-			reader:   tarReader,
-			file:     reader,
-			filename: filename,
-		}, nil
+		return NewTarReader(filename, tarReader, reader), nil
 	case "gz":
 		uncompressedStream, err := gzip.NewReader(reader)
 		if err != nil {
-			return nil, fmt.Errorf("unable to open gzip file %s:\n%v", filename, err)
+			return nil, fmt.Errorf("unable to open gzip file: %v", err)
 		}
 		buffer, err := ioutil.ReadAll(uncompressedStream)
 		if err != nil {
-			return nil, fmt.Errorf("unable to buffer data from %s:\n%v", filename, err)
+			return nil, fmt.Errorf("unable to buffer data from gzip stream: %v", err)
 		}
-		defer func(reader ReadReaderAtCloser) {
+		defer func(reader ContentFileReader) {
 			_ = reader.Close()
 		}(reader)
-		return GetContentReader(filename, int64(len(buffer)), bufferedReadReaderAtCloser{bytes.NewReader(buffer)})
-	case "zip":
-		r, err := zip.NewReader(reader, size)
+		underlyingReader := NoopCloseReader{bytes.NewReader(buffer)}
+		contentFileReader, err := NewContentFileReader(&underlyingReader)
 		if err != nil {
-			return nil, fmt.Errorf("unable to open zip file %s:\n%v", filename, err)
+			return nil, fmt.Errorf("unable to create content reader: %v", err)
 		}
-		return &ZipReader{r, reader, filename}, nil
+		return GetContentReader(filename, int64(len(buffer)), contentFileReader)
+	case "zip":
+		buffer, err := ioutil.ReadAll(reader)
+		if err != nil {
+			return nil, fmt.Errorf("unable to buffer data zip stream: %v", err)
+		}
+		defer func(reader ContentFileReader) {
+			_ = reader.Close()
+		}(reader)
+		bytesReader := bytes.NewReader(buffer)
+		r, err := zip.NewReader(bytesReader, size)
+		if err != nil {
+			return nil, fmt.Errorf("unable to open zip file: %v", err)
+		}
+		return NewZipReader(filename, r, reader), nil
 	}
 	return nil, nil
 }
@@ -95,18 +103,30 @@ type ReadReaderAtCloser interface {
 	io.Closer
 }
 
-type bufferedReadReaderAtCloser struct {
+type BytesReadReaderAtCloser struct {
 	bytesReader *bytes.Reader
 }
 
-func (b bufferedReadReaderAtCloser) Read(p []byte) (n int, err error) {
+func (b BytesReadReaderAtCloser) Read(p []byte) (n int, err error) {
 	return b.bytesReader.Read(p)
 }
 
-func (b bufferedReadReaderAtCloser) ReadAt(p []byte, off int64) (n int, err error) {
+func (b BytesReadReaderAtCloser) ReadAt(p []byte, off int64) (n int, err error) {
 	return b.bytesReader.ReadAt(p, off)
 }
 
-func (b bufferedReadReaderAtCloser) Close() error {
+func (b BytesReadReaderAtCloser) Close() error {
+	return nil
+}
+
+type NoopCloseReader struct {
+	reader io.Reader
+}
+
+func (r NoopCloseReader) Read(p []byte) (n int, err error) {
+	return r.reader.Read(p)
+}
+
+func (r NoopCloseReader) Close() error {
 	return nil
 }

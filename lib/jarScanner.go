@@ -16,6 +16,7 @@
 package lib
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 )
@@ -37,11 +38,15 @@ func (s JarScanner) Scan(contentReader ContentReader) ([]MatchType, error) {
 		basename := filepath.Base(contentReader.Filename())
 		jarNameMatch, err := s.jarNameMatcher.IsMatch(basename)
 		if err != nil {
-			return []MatchType{}, err
+			return []MatchType{}, fmt.Errorf("failed to check jar name/version: %v", err)
 		}
-		jarHashMatch, err := s.jarHashMatcher.IsMatch(contentReader.GetReader())
+		hash, err := contentReader.GetHash()
 		if err != nil {
-			return []MatchType{}, err
+			return []MatchType{}, fmt.Errorf("failed to get hash: %v", err)
+		}
+		jarHashMatch := s.jarHashMatcher.IsHashMatch(hash)
+		if err != nil {
+			return []MatchType{}, fmt.Errorf("failed to chec jar hash: %v", err)
 		}
 		if jarNameMatch && jarHashMatch {
 			return []MatchType{JarName, JarHash}, nil

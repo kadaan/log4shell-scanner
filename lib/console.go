@@ -17,12 +17,14 @@ package lib
 
 import (
 	"fmt"
+	"github.com/jwalton/gchalk"
 )
 
 type Console interface {
-	Info(message string)
-	Verbose(message string)
-	Debug(message string)
+	Matched(message string)
+	NotMatched(message string)
+	Error(message string)
+	Skipped(message string)
 }
 
 type console struct {
@@ -33,18 +35,22 @@ func NewConsole(verbosity int) Console {
 	return &console{verbosity}
 }
 
-func (c *console) Info(message string) {
-	fmt.Println(message)
+func (c *console) Error(message string) {
+	fmt.Printf("%s %s\n", gchalk.Yellow("!!!"), message)
 }
 
-func (c *console) Verbose(message string) {
-	if c.verbosity > 0 {
-		fmt.Println(message)
+func (c *console) Matched(message string) {
+	fmt.Printf("%s %s\n", gchalk.Red("+++"), message)
+}
+
+func (c *console) NotMatched(message string) {
+	if c.verbosity > 1 {
+		fmt.Printf("%s %s\n", gchalk.Green("---"), message)
 	}
 }
 
-func (c *console) Debug(message string) {
-	if c.verbosity > 1 {
-		fmt.Println(message)
+func (c *console) Skipped(message string) {
+	if c.verbosity > 0 {
+		fmt.Println(gchalk.Grey("### ", message, "\n"))
 	}
 }

@@ -16,7 +16,6 @@
 package lib
 
 import (
-	"io"
 	"path/filepath"
 	"strings"
 )
@@ -43,17 +42,11 @@ func (s ClassScanner) Scan(contentFile ContentFile) ([]MatchType, error) {
 		if err != nil {
 			return []MatchType{}, err
 		}
-		reader, err := contentFile.GetReader()
+		hash, err := contentFile.GetReader().GetHash()
 		if err != nil {
 			return []MatchType{}, err
 		}
-		defer func(reader io.ReadCloser) {
-			_ = reader.Close()
-		}(reader)
-		classHashMatch, err := s.classHashMatcher.IsMatch(reader)
-		if err != nil {
-			return []MatchType{}, err
-		}
+		classHashMatch := s.classHashMatcher.IsHashMatch(hash)
 		if classNameMatch && classHashMatch {
 			return []MatchType{ClassName, ClassHash}, nil
 		} else if classNameMatch {

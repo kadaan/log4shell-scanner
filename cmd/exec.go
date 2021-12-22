@@ -18,6 +18,7 @@ package cmd
 import (
 	"fmt"
 	"github.com/bmatcuk/doublestar/v4"
+	"github.com/jwalton/gchalk"
 	"github.com/kadaan/log4shell-scanner/lib"
 	"github.com/kadaan/log4shell-scanner/version"
 	"github.com/spf13/cobra"
@@ -101,21 +102,36 @@ func run(_ *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Total Files Scanned: %d\n", result.GetTotalFilesScanned())
-	fmt.Printf("Total Matched Files: %d\n", result.GetTotalFilesMatched())
-	fmt.Printf("    Class Name Matches: %d\n", result.GetMatchCountByType(lib.ClassName))
-	fmt.Printf("    Class Hash Matches: %d\n", result.GetMatchCountByType(lib.ClassHash))
-	fmt.Printf("    Jar Name Matches: %d\n", result.GetMatchCountByType(lib.JarName))
-	fmt.Printf("    Jar Hash Matches: %d\n", result.GetMatchCountByType(lib.JarHash))
-	fmt.Printf("    Content Matches: %d\n", result.GetMatchCountByType(lib.Content))
-	fmt.Println("Affected Files: ")
+	fmt.Printf("\nTotal Files Scanned: %d\n", result.GetTotalFilesScanned())
+	fmt.Printf("\nTotal Matched Files: %d\n", result.GetTotalFilesMatched())
+	fmt.Printf("    Content Matches: %s\n", gchalk.Blue(fmt.Sprintf("%d", result.GetMatchCountByType(lib.Content))))
+	fmt.Printf("    Class Name Matches: %s\n", gchalk.Green(fmt.Sprintf("%d", result.GetMatchCountByType(lib.ClassName))))
+	fmt.Printf("    Class Hash Matches: %s\n", gchalk.Red(fmt.Sprintf("%d", result.GetMatchCountByType(lib.ClassHash))))
+	fmt.Printf("    Jar Name Matches: %s\n", gchalk.Cyan(fmt.Sprintf("%d", result.GetMatchCountByType(lib.JarName))))
+	fmt.Printf("    Jar Hash Matches: %s\n", gchalk.Yellow(fmt.Sprintf("%d", result.GetMatchCountByType(lib.JarHash))))
+	fmt.Println("\nMatched Files: ")
+	exitCode := 0
 	if result.GetTotalFilesMatched() > 0 {
+		exitCode += 2
 		for _, m := range result.GetMatches() {
 			fmt.Printf("    %s\n", m)
 		}
-		os.Exit(2)
 	} else {
 		fmt.Println("    NONE")
+	}
+
+	fmt.Printf("\nTotal Scan Failures: %d\n", result.GetTotalScanFailures())
+	fmt.Println("\nFailed Files: ")
+	if result.GetTotalScanFailures() > 0 {
+		exitCode += 4
+		for _, m := range result.GetFailures() {
+			fmt.Printf("    %s\n", m)
+		}
+	} else {
+		fmt.Println("    NONE")
+	}
+	if exitCode > 0 {
+		os.Exit(exitCode)
 	}
 	return nil
 }

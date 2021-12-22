@@ -17,121 +17,86 @@ package lib
 
 import (
 	"archive/zip"
-	"bytes"
 	"fmt"
-	"io"
-	"io/ioutil"
 )
 
-func NewEmbeddedZipReader(filename string, uncompressedSize int64, rc io.Reader) (*ZipContentReader, error) {
-	buffer, err := ioutil.ReadAll(rc)
+type zipFile struct {
+	file   *zip.File
+	reader ContentFileReader
+}
+
+func NewZipFile(file *zip.File) (ContentFile, error) {
+	reader, err := file.Open()
 	if err != nil {
+		return nil, fmt.Errorf("unable to open zip content %s:\n%v", file.Name, err)
+	}
+	contentFileReader, err := NewContentFileReader(reader)
+	if err != nil {
+		_ = reader.Close()
 		return nil, err
 	}
-
-	in := bytes.NewReader(buffer)
-	zr, err := zip.NewReader(in, uncompressedSize)
-	if err != nil {
-		return nil, err
-	}
-	return &ZipContentReader{zr, &rc, filename}, nil
+	return &zipFile{file: file, reader: contentFileReader}, nil
 }
 
-type ZipReader struct {
-	zipReader *zip.Reader
-	reader    io.ReadCloser
-	filename  string
-}
-
-func (r *ZipReader) GetFiles() FileIterable {
-	return &ZipReaderFileIterable{
-		index: 0,
-		files: r.zipReader.File,
-	}
-}
-
-func (r *ZipReader) Filename() string {
-	return r.filename
-}
-
-func (r *ZipReader) GetReader() io.Reader {
-	return r.reader
-}
-
-func (r *ZipReader) Close() error {
-	err := r.reader.Close()
-	if err != nil {
-		return fmt.Errorf("failed to close zip reader:\n%v", err)
-	}
-	return nil
-}
-
-type ZipContentReader struct {
-	zipReader *zip.Reader
-	reader    *io.Reader
-	filename  string
-}
-
-func (r *ZipContentReader) GetFiles() FileIterable {
-	return &ZipReaderFileIterable{
-		index: 0,
-		files: r.zipReader.File,
-	}
-}
-
-func (r *ZipContentReader) Filename() string {
-	return r.filename
-}
-
-func (r *ZipContentReader) GetReader() io.Reader {
-	return *r.reader
-}
-
-func (r *ZipContentReader) Close() error {
-	if c, ok := (*r.reader).(io.Closer); ok {
-		return c.Close()
-	}
-	return nil
-}
-
-type ZipFile struct {
-	file *zip.File
-}
-
-func (z *ZipFile) Name() string {
+func (z *zipFile) Name() string {
 	return z.file.Name
 }
 
-func (z *ZipFile) IsDir() bool {
+func (z *zipFile) IsDir() bool {
 	return z.file.FileInfo().IsDir()
 }
 
-func (z *ZipFile) UncompressedSize() int64 {
+func (z *zipFile) UncompressedSize() int64 {
 	return int64(z.file.UncompressedSize64)
 }
 
-func (z *ZipFile) GetContentReader() (ContentReader, error) {
-	rc, err := z.file.Open()
-	if err != nil {
-		return nil, err
-	}
-	return NewEmbeddedZipReader(z.Name(), int64(z.file.UncompressedSize64), rc.(io.Reader))
+func (z *zipFile) GetReader() ContentFileReader {
+	return z.reader
 }
 
-func (z *ZipFile) GetReader() (io.ReadCloser, error) {
-	raw, err := z.file.Open()
-	if err != nil {
-		return nil, err
-	}
-	return raw, nil
+func (z *zipFile) Close() error {
+	return z.reader.Close()
 }
 
-type ZipReaderFileIterable struct {
+type zipReader struct {
+	reader            *zip.Reader
+	contentFileReader ContentFileReader
+	filename          string
+}
+
+func NewZipReader(filename string, reader *zip.Reader, contentFileReader ContentFileReader) ContentReader {
+	return &zipReader{
+		reader:            reader,
+		contentFileReader: contentFileReader,
+		filename:          filename,
+	}
+}
+
+func (r *zipReader) GetFiles() FileIterable {
+	return &zipReaderFileIterable{
+		index: 0,
+		files: r.reader.File,
+	}
+}
+
+func (r *zipReader) Filename() string {
+	return r.filename
+}
+
+func (r *zipReader) GetHash() (string, error) {
+	return r.contentFileReader.GetHash()
+}
+
+func (r *zipReader) Close() error {
+	return r.contentFileReader.Close()
+}
+
+type zipReaderFileIterable struct {
 	index int
 	files []*zip.File
 }
 
-func (i *ZipReaderFileIterable) Next() (interface{}, error) {
+func (i *zipReaderFileIterable) Next() (interface{}, error) {
 	for {
 		if i.index >= len(i.files)-1 {
 			return nil, nil
@@ -141,6 +106,6 @@ func (i *ZipReaderFileIterable) Next() (interface{}, error) {
 		if i.files[current].FileInfo().IsDir() {
 			continue
 		}
-		return &ZipFile{i.files[current]}, nil
+		return NewZipFile(i.files[current])
 	}
 }

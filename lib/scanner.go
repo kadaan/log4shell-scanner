@@ -17,6 +17,7 @@ package lib
 
 import (
 	"fmt"
+	"github.com/jwalton/gchalk"
 	"sort"
 	"strings"
 )
@@ -27,28 +28,68 @@ type Scanner interface {
 	Scan(roots ...string) (ScanResult, error)
 }
 
-type ScanFileResult struct {
+type ScanMatch struct {
 	fileId     string
 	matchTypes []string
 }
 
-func (s ScanFileResult) String() string {
-	return fmt.Sprintf("(%s) %s", strings.Join(s.matchTypes, " "), s.fileId)
+func (s ScanMatch) String() string {
+	return fmt.Sprintf("(%s) %s", strings.Join(s.matchTypes, " "),
+		gchalk.WithAnsi256(uint8(245+2*len(s.matchTypes))).Paint(s.fileId))
+}
+
+type ScanFailure struct {
+	fileId   string
+	messages []string
+}
+
+func (s ScanFailure) String() string {
+	return fmt.Sprintf("%s\n        %s", s.fileId, gchalk.Grey(strings.Join(s.messages, "        \n")))
 }
 
 type ScanResult struct {
 	matches           map[string]map[MatchType]struct{}
+	failures          map[string]map[string]struct{}
 	totalFilesScanned int
 }
 
 func NewScanResult() ScanResult {
 	return ScanResult{
 		matches:           map[string]map[MatchType]struct{}{},
+		failures:          map[string]map[string]struct{}{},
 		totalFilesScanned: 0,
 	}
 }
 
-func (s *ScanResult) GetMatches() []ScanFileResult {
+func (s *ScanResult) GetFailures() []ScanFailure {
+	i := 0
+	fileIds := make([]string, len(s.failures))
+	for k := range s.failures {
+		fileIds[i] = k
+		i += 1
+	}
+	sort.SliceStable(fileIds, func(i, j int) bool {
+		return fileIds[i] < fileIds[j]
+	})
+
+	results := make([]ScanFailure, len(fileIds))
+	for i, k := range fileIds {
+		j := 0
+		v := s.failures[k]
+		failures := make([]string, len(v))
+		for m := range v {
+			failures[j] = m
+			j += 1
+		}
+		sort.SliceStable(failures, func(i, j int) bool {
+			return failures[i] < failures[j]
+		})
+		results[i] = ScanFailure{k, failures}
+	}
+	return results
+}
+
+func (s *ScanResult) GetMatches() []ScanMatch {
 	i := 0
 	fileIds := make([]string, len(s.matches))
 	for k := range s.matches {
@@ -59,7 +100,7 @@ func (s *ScanResult) GetMatches() []ScanFileResult {
 		return fileIds[i] < fileIds[j]
 	})
 
-	results := make([]ScanFileResult, len(fileIds))
+	results := make([]ScanMatch, len(fileIds))
 	for i, k := range fileIds {
 		j := 0
 		v := s.matches[k]
@@ -71,7 +112,7 @@ func (s *ScanResult) GetMatches() []ScanFileResult {
 		sort.SliceStable(matchTypes, func(i, j int) bool {
 			return matchTypes[i] < matchTypes[j]
 		})
-		results[i] = ScanFileResult{k, matchTypes}
+		results[i] = ScanMatch{k, matchTypes}
 	}
 	return results
 }
@@ -79,17 +120,21 @@ func (s *ScanResult) GetMatches() []ScanFileResult {
 func (s *ScanResult) getMatchTypeString(m MatchType) string {
 	switch m {
 	case Content:
-		return "CONTENT"
+		return gchalk.Blue("CONTENT")
 	case ClassName:
-		return "CLASS_NAME"
+		return gchalk.Green("CLASS_NAME")
 	case ClassHash:
-		return "CLASS_HASH"
+		return gchalk.Red("CLASS_HASH")
 	case JarName:
-		return "JAR_NAME"
+		return gchalk.Cyan("JAR_NAME")
 	case JarHash:
-		return "JAR_HASH"
+		return gchalk.Yellow("JAR_HASH")
 	}
-	return "UNKNOWN"
+	return gchalk.Grey("UNKNOWN")
+}
+
+func (s *ScanResult) GetTotalScanFailures() int {
+	return len(s.failures)
 }
 
 func (s *ScanResult) GetTotalFilesScanned() int {
@@ -135,6 +180,18 @@ func (s *ScanResult) Merge(result ScanResult) bool {
 		}
 		return true
 	}
+	if len(result.failures) > 0 {
+		for k, v := range result.failures {
+			if _, ok := s.failures[k]; ok {
+				for m, z := range v {
+					s.failures[k][m] = z
+				}
+			} else {
+				s.failures[k] = v
+			}
+		}
+		return true
+	}
 	return false
 }
 
@@ -146,6 +203,15 @@ func (s *ScanResult) AddMatch(id string, types ...MatchType) {
 		} else {
 			m[matchType] = struct{}{}
 		}
+	}
+}
+
+func (s *ScanResult) AddFailure(id string, err error) {
+	m, ok := s.failures[id]
+	if !ok {
+		s.failures[id] = map[string]struct{}{err.Error(): {}}
+	} else {
+		m[err.Error()] = struct{}{}
 	}
 }
 
@@ -175,7 +241,7 @@ func (s *scanner) Scan(roots ...string) (ScanResult, error) {
 		result.IncrementTotal()
 		scanResult, err := s.scan(fileId, filePath)
 		if err != nil {
-			return fmt.Errorf("failed to scan %s:\n%v", fileId, err)
+			result.AddFailure(fileId, fmt.Errorf("failed to scan: %v", err))
 		}
 		result.Merge(scanResult)
 		return nil
@@ -189,6 +255,10 @@ func (s *scanner) scan(id string, source interface{}) (ScanResult, error) {
 	result := NewScanResult()
 	fileId := id
 	if contentFile, ok := source.(ContentFile); ok {
+		defer func(contentFile ContentFile) {
+			_ = contentFile.Close()
+		}(contentFile)
+
 		if contentFile.IsDir() {
 			return result, nil
 		}
@@ -197,62 +267,67 @@ func (s *scanner) scan(id string, source interface{}) (ScanResult, error) {
 		if strings.HasSuffix(contentFile.Name(), ".class") {
 			matchTypes, err := s.classScanner.Scan(contentFile)
 			if err != nil {
-				return result, fmt.Errorf("failed to scan class %s:\n%v", fileId, err)
+				result.AddFailure(fileId, fmt.Errorf("failed to scan class: %v", err))
+				s.console.Error(fileId)
+				return result, nil
 			}
 			if len(matchTypes) == 0 {
 				return result, nil
 			}
 			result.AddMatch(fileId, matchTypes...)
-			s.console.Info(fmt.Sprintf("+++ %s", fileId))
+			s.console.Matched(fileId)
 			return result, nil
-		} else if strings.HasSuffix(contentFile.Name(), ".jar") || strings.HasSuffix(contentFile.Name(), ".zip") {
-			ioReader, err := contentFile.GetReader()
-			if err != nil {
-				return result, fmt.Errorf("failed to get embedded zip reader %s:\n%v", fileId, err)
-			}
-			zipReader, err := NewEmbeddedZipReader(contentFile.Name(), contentFile.UncompressedSize(), ioReader)
-			if err != nil {
-				return result, fmt.Errorf("failed to open embedded zip %s:\n%v", fileId, err)
-			}
-			reader = zipReader
 		} else {
-			s.console.Debug(fmt.Sprintf("### %s", fileId))
-			return result, nil
+			contentFileReader := contentFile.GetReader()
+			contentReader, err := GetContentReader(contentFile.Name(), contentFile.UncompressedSize(), contentFileReader)
+			if err != nil {
+				result.AddFailure(fileId, err)
+				s.console.Error(fileId)
+				return result, nil
+			}
+			if contentReader == nil {
+				s.console.Skipped(fileId)
+				return result, nil
+			}
+			reader = contentReader
 		}
 	} else if filename, ok := source.(string); ok {
-
 		result.IncrementTotal()
 		contentReader, err := GetContentReaderFromFile(filename)
 		if err != nil {
-			return ScanResult{}, err
+			result.AddFailure(fileId, err)
+			s.console.Error(fileId)
+			return result, nil
 		}
 		if contentReader == nil {
-			s.console.Debug(fmt.Sprintf("### %s", fileId))
+			s.console.Skipped(fileId)
 			return result, nil
 		}
 		reader = contentReader
 	}
-	defer func(reader ContentReader) {
-		_ = reader.Close()
-	}(reader)
 	contentMatch := false
 	matchTypes, err := s.jarScanner.Scan(reader)
 	if err != nil {
-		return result, fmt.Errorf("failed to scan %s:\n%v", fileId, err)
+		result.AddFailure(fileId, err)
+		s.console.Error(fileId)
+		return result, nil
 	}
 	result.AddMatch(fileId, matchTypes...)
 	files := reader.GetFiles()
 	for {
 		next, err := files.Next()
 		if err != nil {
-			return result, fmt.Errorf("failed to get next archive file from %s:\n%v", fileId, err)
+			result.AddFailure(fileId, fmt.Errorf("failed to get next archive file: %v", err))
+			s.console.Error(fileId)
+			return result, nil
 		}
 		if next == nil {
 			break
 		}
 		contentScanResult, err := s.scan(fileId, next)
 		if err != nil {
-			return result, fmt.Errorf("failed to scan %s:\n%v", fileId, err)
+			result.AddFailure(fileId, fmt.Errorf("failed to scan: %v", err))
+			s.console.Error(fileId)
 		}
 		if result.Merge(contentScanResult) {
 			contentMatch = true
@@ -260,9 +335,9 @@ func (s *scanner) scan(id string, source interface{}) (ScanResult, error) {
 		}
 	}
 	if contentMatch {
-		s.console.Info(fmt.Sprintf("+++ %s", fileId))
+		s.console.Matched(fileId)
 	} else {
-		s.console.Verbose(fmt.Sprintf("--- %s", fileId))
+		s.console.NotMatched(fileId)
 	}
 	return result, nil
 }
