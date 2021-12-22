@@ -17,7 +17,16 @@ package lib
 
 import (
 	"fmt"
+	"github.com/aquilax/truncate"
 	"github.com/jwalton/gchalk"
+	"time"
+)
+
+const (
+	ellipsis            = "..."
+	resetLine           = "\r\033[K"
+	maxWidth            = 80
+	minProgressUpdateMs = 100
 )
 
 type Console interface {
@@ -28,29 +37,55 @@ type Console interface {
 }
 
 type console struct {
-	verbosity int
+	verbosity  int
+	count      int
+	lastUpdate time.Time
 }
 
 func NewConsole(verbosity int) Console {
-	return &console{verbosity}
+	return &console{verbosity, 0, time.Now()}
 }
 
 func (c *console) Error(message string) {
-	fmt.Printf("%s %s\n", gchalk.Yellow("!!!"), message)
+	c.count += 1
+	c.println(gchalk.Yellow("!!!"), message)
 }
 
 func (c *console) Matched(message string) {
-	fmt.Printf("%s %s\n", gchalk.Red("+++"), message)
+	c.count += 1
+	c.println(gchalk.Red("+++"), message)
 }
 
 func (c *console) NotMatched(message string) {
+	c.count += 1
 	if c.verbosity > 1 {
-		fmt.Printf("%s %s\n", gchalk.Green("---"), message)
+		c.println(gchalk.Green("---"), message)
+	} else {
+		c.print(gchalk.Green("---"), message)
 	}
 }
 
 func (c *console) Skipped(message string) {
+	c.count += 1
 	if c.verbosity > 0 {
-		fmt.Println(gchalk.Grey("### ", message, "\n"))
+		c.println(gchalk.Grey("###"), message)
+	} else {
+		c.print(gchalk.Grey("###"), message)
 	}
+}
+
+func (c *console) print(symbol string, message string) {
+	now := time.Now()
+	if now.Sub(c.lastUpdate).Milliseconds() > minProgressUpdateMs {
+		fmt.Printf("%s%s %-12d %s %s", resetLine, gchalk.Bold("Scanned:"), c.count, symbol, gchalk.Grey(c.truncate(maxWidth, message)))
+		c.lastUpdate = now
+	}
+}
+
+func (c *console) println(symbol string, message string) {
+	fmt.Printf("%s%s %s\n", resetLine, symbol, message)
+}
+
+func (c *console) truncate(maxWidth int, message string) string {
+	return truncate.Truncate(message, maxWidth, ellipsis, truncate.PositionMiddle)
 }

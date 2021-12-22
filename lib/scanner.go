@@ -238,7 +238,6 @@ func (s *scanner) Scan(roots ...string) (ScanResult, error) {
 		if result.HasSeen(filePath) {
 			return nil
 		}
-		result.IncrementTotal()
 		scanResult, err := s.scan(fileId, filePath)
 		if err != nil {
 			result.AddFailure(fileId, fmt.Errorf("failed to scan: %v", err))
@@ -272,6 +271,7 @@ func (s *scanner) scan(id string, source interface{}) (ScanResult, error) {
 				return result, nil
 			}
 			if len(matchTypes) == 0 {
+				s.console.NotMatched(fileId)
 				return result, nil
 			}
 			result.AddMatch(fileId, matchTypes...)
