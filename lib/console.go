@@ -25,59 +25,56 @@ import (
 const (
 	ellipsis            = "..."
 	resetLine           = "\r\033[K"
-	maxWidth            = 80
+	maxWidth            = 100
 	minProgressUpdateMs = 100
 )
 
 type Console interface {
-	Matched(message string)
-	NotMatched(message string)
-	Error(message string)
-	Skipped(message string)
+	Matched(progress Progress, message string)
+	NotMatched(progress Progress, message string)
+	Error(progress Progress, message string)
+	Skipped(progress Progress, message string)
 }
 
 type console struct {
 	verbosity  int
-	count      int
 	lastUpdate time.Time
 }
 
 func NewConsole(verbosity int) Console {
-	return &console{verbosity, 0, time.Now()}
+	return &console{verbosity, time.Now()}
 }
 
-func (c *console) Error(message string) {
-	c.count += 1
+func (c *console) Error(progress Progress, message string) {
 	c.println(gchalk.Yellow("!!!"), message)
 }
 
-func (c *console) Matched(message string) {
-	c.count += 1
+func (c *console) Matched(progress Progress, message string) {
 	c.println(gchalk.Red("+++"), message)
 }
 
-func (c *console) NotMatched(message string) {
-	c.count += 1
+func (c *console) NotMatched(progress Progress, message string) {
 	if c.verbosity > 1 {
 		c.println(gchalk.Green("---"), message)
 	} else {
-		c.print(gchalk.Green("---"), message)
+		c.print(progress, gchalk.Green("---"), message)
 	}
 }
 
-func (c *console) Skipped(message string) {
-	c.count += 1
+func (c *console) Skipped(progress Progress, message string) {
 	if c.verbosity > 0 {
 		c.println(gchalk.Grey("###"), message)
 	} else {
-		c.print(gchalk.Grey("###"), message)
+		c.print(progress, gchalk.Grey("###"), message)
 	}
 }
 
-func (c *console) print(symbol string, message string) {
+func (c *console) print(progress Progress, symbol string, message string) {
 	now := time.Now()
 	if now.Sub(c.lastUpdate).Milliseconds() > minProgressUpdateMs {
-		fmt.Printf("%s%s %-12d %s %s", resetLine, gchalk.Bold("Scanned:"), c.count, symbol, gchalk.Grey(c.truncate(maxWidth, message)))
+		scanned := fmt.Sprintf("Scanned: %d of %d", progress.Current(), progress.Total())
+		width := maxWidth - len(scanned)
+		fmt.Printf("%s%s %s %s", resetLine, gchalk.Bold(scanned), symbol, gchalk.Grey(c.truncate(width, message)))
 		c.lastUpdate = now
 	}
 }

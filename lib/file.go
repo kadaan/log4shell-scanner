@@ -66,6 +66,7 @@ func GetContentReader(filename string, size int64, reader ContentFileReader) (Co
 		if err != nil {
 			return nil, fmt.Errorf("unable to buffer data from gzip stream: %v", err)
 		}
+		uncompressedStream.Close()
 		defer func(reader ContentFileReader) {
 			_ = reader.Close()
 		}(reader)

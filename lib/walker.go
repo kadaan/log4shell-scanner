@@ -26,9 +26,9 @@ import (
 	"sort"
 )
 
-type WalkDirFunc func(fileId string, filePath string) error
+type WalkDirFunc func(fileId string, filePath string, p Progress) error
 
-type walkDirFunc func(root string, path string, d DirEntryEx, err error) error
+type walkDirFunc func(root string, path string, d DirEntryEx, p Progress, err error) error
 
 type Walker interface {
 	WalkDirs(fn WalkDirFunc, roots ...string) error
@@ -44,6 +44,10 @@ func NewWalker(includeGlobs []string) Walker {
 }
 
 func (w *walker) WalkDirs(fn WalkDirFunc, roots ...string) error {
+	p := &progress{
+		current: 0,
+		total:   len(roots),
+	}
 	for _, root := range roots {
 		expandedRoot, err := homedir.Expand(root)
 		if err != nil {
@@ -56,7 +60,7 @@ func (w *walker) WalkDirs(fn WalkDirFunc, roots ...string) error {
 		root = absRoot
 		info, err := os.Lstat(root)
 		if err != nil {
-			err = w.walkDirEx(fn, root, root, nil, err)
+			err = w.walkDirEx(fn, root, root, nil, p, err)
 		} else {
 			entry := fs.FileInfoToDirEntry(info)
 			err = w.walkDir(root, root, &statDirEntryEx{
@@ -64,8 +68,8 @@ func (w *walker) WalkDirs(fn WalkDirFunc, roots ...string) error {
 				root,
 				nil,
 				nil,
-			}, func(root string, path string, d DirEntryEx, err error) error {
-				return w.walkDirEx(fn, root, path, d, err)
+			}, p, func(root string, path string, d DirEntryEx, p Progress, err error) error {
+				return w.walkDirEx(fn, root, path, d, p, err)
 			})
 		}
 		if err == filepath.SkipDir {
@@ -78,7 +82,7 @@ func (w *walker) WalkDirs(fn WalkDirFunc, roots ...string) error {
 	return nil
 }
 
-func (w *walker) walkDirEx(fn WalkDirFunc, root string, path string, d DirEntryEx, err error) error {
+func (w *walker) walkDirEx(fn WalkDirFunc, root string, path string, d DirEntryEx, p Progress, err error) error {
 	if _, seen := w.seenPaths[path]; seen {
 		if d.IsDir() {
 			return fs.SkipDir
@@ -113,7 +117,7 @@ func (w *walker) walkDirEx(fn WalkDirFunc, root string, path string, d DirEntryE
 		fileId = fmt.Sprintf("%s (%s)", fileId, relTargetPath)
 	}
 	w.seenPaths[filePath] = struct{}{}
-	return fn(fileId, filePath)
+	return fn(fileId, filePath, p)
 }
 
 func (w *walker) isIncluded(path string) bool {
@@ -127,8 +131,9 @@ func (w *walker) isIncluded(path string) bool {
 	return includeGlobMatch
 }
 
-func (w *walker) walkDir(root string, path string, d DirEntryEx, walkDirFn walkDirFunc) error {
-	if err := walkDirFn(root, path, d, nil); err != nil || !d.IsDir() {
+func (w *walker) walkDir(root string, path string, d DirEntryEx, p Progress, walkDirFn walkDirFunc) error {
+	p.Increment()
+	if err := walkDirFn(root, path, d, p, nil); err != nil || !d.IsDir() {
 		if err == filepath.SkipDir && d.IsDir() {
 			err = nil
 		}
@@ -139,7 +144,7 @@ func (w *walker) walkDir(root string, path string, d DirEntryEx, walkDirFn walkD
 	dirToRead := path
 	if d.IsSymLink() {
 		symLinkTargetPath, err := d.SymLinkTargetPath()
-		if err := walkDirFn(root, *symLinkTargetPath, d, err); err != nil || !d.IsDir() {
+		if err := walkDirFn(root, *symLinkTargetPath, d, p, err); err != nil || !d.IsDir() {
 			if err == filepath.SkipDir && d.IsDir() {
 				err = nil
 			}
@@ -148,15 +153,16 @@ func (w *walker) walkDir(root string, path string, d DirEntryEx, walkDirFn walkD
 		targetPath = symLinkTargetPath
 	}
 	dirs, err := readDir(dirToRead, targetPath)
+	p.AddToTotal(len(dirs))
 	if err != nil {
-		err = walkDirFn(root, path, d, err)
+		err = walkDirFn(root, path, d, p, err)
 		if err != nil {
 			return err
 		}
 	}
 	for _, d1 := range dirs {
 		path1 := filepath.Join(path, d1.DirEntry().Name())
-		if err := w.walkDir(root, path1, d1, walkDirFn); err != nil {
+		if err := w.walkDir(root, path1, d1, p, walkDirFn); err != nil {
 			if err == filepath.SkipDir {
 				break
 			}
@@ -194,6 +200,34 @@ func readDir(dirname string, targetPath *string) ([]DirEntryEx, error) {
 	}
 	sort.Slice(dirsEx, func(i, j int) bool { return dirsEx[i].DirEntry().Name() < dirsEx[j].DirEntry().Name() })
 	return dirsEx, nil
+}
+
+type Progress interface {
+	Current() int
+	Total() int
+	AddToTotal(i int)
+	Increment()
+}
+
+type progress struct {
+	current int
+	total   int
+}
+
+func (p *progress) Current() int {
+	return p.current
+}
+
+func (p *progress) Total() int {
+	return p.total
+}
+
+func (p *progress) AddToTotal(i int) {
+	p.total += i
+}
+
+func (p *progress) Increment() {
+	p.current += 1
 }
 
 type DirEntryEx interface {

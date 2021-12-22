@@ -155,6 +155,10 @@ func (s *ScanResult) GetMatchCountByType(matchType MatchType) int {
 	return count
 }
 
+func (s *ScanResult) GetMatchesForFileId(id string) map[MatchType]struct{} {
+	return s.matches[id]
+}
+
 func (s *ScanResult) IncrementTotal() {
 	s.totalFilesScanned += 1
 }
@@ -234,11 +238,11 @@ func NewScanner(classScanner ClassScanner, jarScanner JarScanner, includeGlobs [
 func (s *scanner) Scan(roots ...string) (ScanResult, error) {
 	result := NewScanResult()
 	walker := NewWalker(s.includeGlobs)
-	err := walker.WalkDirs(func(fileId string, filePath string) error {
+	err := walker.WalkDirs(func(fileId string, filePath string, progress Progress) error {
 		if result.HasSeen(filePath) {
 			return nil
 		}
-		scanResult, err := s.scan(fileId, filePath)
+		scanResult, err := s.scan(fileId, filePath, progress)
 		if err != nil {
 			result.AddFailure(fileId, fmt.Errorf("failed to scan: %v", err))
 		}
@@ -248,7 +252,7 @@ func (s *scanner) Scan(roots ...string) (ScanResult, error) {
 	return result, err
 }
 
-func (s *scanner) scan(id string, source interface{}) (ScanResult, error) {
+func (s *scanner) scan(id string, source interface{}, progress Progress) (ScanResult, error) {
 	var err error
 	var reader ContentReader
 	result := NewScanResult()
@@ -267,26 +271,26 @@ func (s *scanner) scan(id string, source interface{}) (ScanResult, error) {
 			matchTypes, err := s.classScanner.Scan(contentFile)
 			if err != nil {
 				result.AddFailure(fileId, fmt.Errorf("failed to scan class: %v", err))
-				s.console.Error(fileId)
+				s.console.Error(progress, fileId)
 				return result, nil
 			}
 			if len(matchTypes) == 0 {
-				s.console.NotMatched(fileId)
+				s.console.NotMatched(progress, fileId)
 				return result, nil
 			}
 			result.AddMatch(fileId, matchTypes...)
-			s.console.Matched(fileId)
+			s.console.Matched(progress, fileId)
 			return result, nil
 		} else {
 			contentFileReader := contentFile.GetReader()
 			contentReader, err := GetContentReader(contentFile.Name(), contentFile.UncompressedSize(), contentFileReader)
 			if err != nil {
 				result.AddFailure(fileId, err)
-				s.console.Error(fileId)
+				s.console.Error(progress, fileId)
 				return result, nil
 			}
 			if contentReader == nil {
-				s.console.Skipped(fileId)
+				s.console.Skipped(progress, fileId)
 				return result, nil
 			}
 			reader = contentReader
@@ -296,20 +300,19 @@ func (s *scanner) scan(id string, source interface{}) (ScanResult, error) {
 		contentReader, err := GetContentReaderFromFile(filename)
 		if err != nil {
 			result.AddFailure(fileId, err)
-			s.console.Error(fileId)
+			s.console.Error(progress, fileId)
 			return result, nil
 		}
 		if contentReader == nil {
-			s.console.Skipped(fileId)
+			s.console.Skipped(progress, fileId)
 			return result, nil
 		}
 		reader = contentReader
 	}
-	contentMatch := false
 	matchTypes, err := s.jarScanner.Scan(reader)
 	if err != nil {
 		result.AddFailure(fileId, err)
-		s.console.Error(fileId)
+		s.console.Error(progress, fileId)
 		return result, nil
 	}
 	result.AddMatch(fileId, matchTypes...)
@@ -318,26 +321,27 @@ func (s *scanner) scan(id string, source interface{}) (ScanResult, error) {
 		next, err := files.Next()
 		if err != nil {
 			result.AddFailure(fileId, fmt.Errorf("failed to get next archive file: %v", err))
-			s.console.Error(fileId)
+			s.console.Error(progress, fileId)
 			return result, nil
 		}
 		if next == nil {
 			break
 		}
-		contentScanResult, err := s.scan(fileId, next)
+		contentScanResult, err := s.scan(fileId, next, progress)
 		if err != nil {
 			result.AddFailure(fileId, fmt.Errorf("failed to scan: %v", err))
-			s.console.Error(fileId)
+			s.console.Error(progress, fileId)
 		}
 		if result.Merge(contentScanResult) {
-			contentMatch = true
 			result.AddMatch(fileId, Content)
 		}
 	}
-	if contentMatch {
-		s.console.Matched(fileId)
+	currentMatches := result.GetMatchesForFileId(fileId)
+	_, contentMatch := currentMatches[Content]
+	if len(currentMatches) > 1 || (len(currentMatches) > 0 && !contentMatch) {
+		s.console.Matched(progress, fileId)
 	} else {
-		s.console.NotMatched(fileId)
+		s.console.NotMatched(progress, fileId)
 	}
 	return result, nil
 }
