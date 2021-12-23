@@ -18,7 +18,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/jwalton/gchalk"
 	"github.com/kadaan/log4shell-scanner/lib"
 	"github.com/kadaan/log4shell-scanner/version"
@@ -46,6 +45,7 @@ indicates they can be exploited.  The scanner with also search within jar, zip, 
 	verbosity       int
 	classes         []string
 	includeGlobs    []string
+	excludeGlobs    []string
 	jars            []string
 	scanner         lib.Scanner
 )
@@ -65,7 +65,8 @@ func init() {
 	rootCmd.Flags().StringSliceVar(&classes, "classes", []string{"JndiLookup"}, "Classes to match (repeatable)")
 	rootCmd.Flags().StringVar(&classHashesFile, "class-hashes", "", "File containing SHA256 hashes of classes to match")
 	_ = rootCmd.MarkFlagFilename("class-hashes")
-	rootCmd.Flags().StringSliceVar(&includeGlobs, "include-globs", []string{"**/**"}, "Globs that indicate which path to include in the scan (repeatable)")
+	rootCmd.Flags().StringSliceVar(&includeGlobs, "include-globs", []string{"**/**"}, "Globs that indicate which paths to include in the scan (repeatable)")
+	rootCmd.Flags().StringSliceVar(&excludeGlobs, "exclude-globs", []string{"**/.git/**", "**/.runtime/**", "**/node_modules/**"}, "Globs that indicate which paths to exclude in the scan (repeatable)")
 	rootCmd.Flags().CountVarP(&verbosity, "verbose", "v", "Verbose logging")
 	rootCmd.Flags().BoolVar(&printVersion, "version", false, "Print version")
 	lib.AddProfileFlags(rootCmd)
@@ -77,10 +78,9 @@ func pre(_ *cobra.Command, _ []string) error {
 		os.Exit(0)
 	}
 
-	for _, g := range includeGlobs {
-		if !doublestar.ValidatePathPattern(g) {
-			return fmt.Errorf("invalid include glob: %s", g)
-		}
+	globMatcher, err := lib.NewGlobMatcher(includeGlobs, excludeGlobs)
+	if err != nil {
+		return err
 	}
 
 	classNameMatcher := lib.NewClassNameMatcher(classes)
@@ -101,7 +101,7 @@ func pre(_ *cobra.Command, _ []string) error {
 	}
 	jarScanner := lib.NewJarScanner(jarNameMatcher, jarHashMatcher)
 
-	scanner = lib.NewScanner(classScanner, jarScanner, includeGlobs, verbosity)
+	scanner = lib.NewScanner(classScanner, jarScanner, globMatcher, verbosity)
 	return nil
 }
 

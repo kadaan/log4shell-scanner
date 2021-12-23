@@ -57,18 +57,24 @@ type tarReader struct {
 	reader            *tar.Reader
 	contentFileReader ContentFileReader
 	filename          string
+	globMatcher       GlobMatcher
 }
 
-func NewTarReader(filename string, reader *tar.Reader, contentFileReader ContentFileReader) ContentReader {
+func NewTarReader(filename string, reader *tar.Reader, contentFileReader ContentFileReader, globMatcher GlobMatcher) ContentReader {
 	return &tarReader{
 		reader:            reader,
 		contentFileReader: contentFileReader,
 		filename:          filename,
+		globMatcher:       globMatcher,
 	}
 }
 
 func (r *tarReader) Files() FileIterable {
-	return &tarReaderFileIterable{filename: r.filename, reader: r.reader}
+	return &tarReaderFileIterable{
+		filename:    r.filename,
+		reader:      r.reader,
+		globMatcher: r.globMatcher,
+	}
 }
 
 func (r *tarReader) Filename() string {
@@ -84,8 +90,9 @@ func (r *tarReader) Close() error {
 }
 
 type tarReaderFileIterable struct {
-	filename string
-	reader   *tar.Reader
+	filename    string
+	reader      *tar.Reader
+	globMatcher GlobMatcher
 }
 
 func (i *tarReaderFileIterable) Next() (interface{}, error) {
@@ -97,7 +104,7 @@ func (i *tarReaderFileIterable) Next() (interface{}, error) {
 		if err != nil {
 			return nil, err
 		}
-		if next.Typeflag != tar.TypeReg || next.Size == 0 {
+		if next.Typeflag != tar.TypeReg || next.Size == 0 || !i.globMatcher.IsIncluded(next.Name) {
 			continue
 		}
 		return NewTarFile(next, i.reader)

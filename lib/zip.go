@@ -63,13 +63,15 @@ type zipReader struct {
 	reader            *zip.Reader
 	contentFileReader ContentFileReader
 	closers           []io.Closer
+	globMatcher       GlobMatcher
 	filename          string
 }
 
-func NewZipReader(filename string, reader *zip.Reader, contentFileReader ContentFileReader, closers ...io.Closer) ContentReader {
+func NewZipReader(filename string, reader *zip.Reader, contentFileReader ContentFileReader, globMatcher GlobMatcher, closers ...io.Closer) ContentReader {
 	return &zipReader{
 		reader:            reader,
 		contentFileReader: contentFileReader,
+		globMatcher:       globMatcher,
 		closers:           closers,
 		filename:          filename,
 	}
@@ -77,8 +79,9 @@ func NewZipReader(filename string, reader *zip.Reader, contentFileReader Content
 
 func (r *zipReader) Files() FileIterable {
 	return &zipReaderFileIterable{
-		index: 0,
-		files: r.reader.File,
+		index:       0,
+		files:       r.reader.File,
+		globMatcher: r.globMatcher,
 	}
 }
 
@@ -109,8 +112,9 @@ func (r *zipReader) Close() error {
 }
 
 type zipReaderFileIterable struct {
-	index int
-	files []*zip.File
+	index       int
+	files       []*zip.File
+	globMatcher GlobMatcher
 }
 
 func (i *zipReaderFileIterable) Next() (interface{}, error) {
@@ -120,9 +124,10 @@ func (i *zipReaderFileIterable) Next() (interface{}, error) {
 		}
 		current := i.index
 		i.index += 1
-		if i.files[current].FileInfo().IsDir() {
+		currentFile := i.files[current]
+		if currentFile.FileInfo().IsDir() || i.globMatcher.IsIncluded(currentFile.Name) {
 			continue
 		}
-		return NewZipFile(i.files[current])
+		return NewZipFile(currentFile)
 	}
 }

@@ -33,7 +33,7 @@ var bufferPool = sync.Pool{
 	},
 }
 
-func GetContentReaderFromFile(filename string) (ContentReader, error) {
+func GetContentReaderFromFile(filename string, globMatcher GlobMatcher) (ContentReader, error) {
 	f, err := os.Open(filename)
 	if err != nil {
 		return nil, err
@@ -46,14 +46,14 @@ func GetContentReaderFromFile(filename string) (ContentReader, error) {
 	if err != nil {
 		return nil, err
 	}
-	reader, err := GetContentReader(fileReader)
+	reader, err := GetContentReader(fileReader, globMatcher)
 	if err != nil || reader == nil {
 		_ = f.Close()
 	}
 	return reader, err
 }
 
-func GetContentReader(reader ContentFileReader) (ContentReader, error) {
+func GetContentReader(reader ContentFileReader, globMatcher GlobMatcher) (ContentReader, error) {
 	kind, _ := filetype.Match(reader.Header())
 	switch kind.Extension {
 	case "tar":
@@ -62,7 +62,7 @@ func GetContentReader(reader ContentFileReader) (ContentReader, error) {
 		if err != nil {
 			return nil, fmt.Errorf("unable to open tar file: %v", err)
 		}
-		return NewTarReader(reader.Filename(), tarReader, reader), nil
+		return NewTarReader(reader.Filename(), tarReader, reader, globMatcher), nil
 	case "gz":
 		uncompressedStream, err := gzip.NewReader(reader)
 		if err != nil {
@@ -73,7 +73,7 @@ func GetContentReader(reader ContentFileReader) (ContentReader, error) {
 		if err != nil {
 			return nil, fmt.Errorf("unable to create content reader: %v", err)
 		}
-		return GetContentReader(contentFileReader)
+		return GetContentReader(contentFileReader, globMatcher)
 	case "zip":
 		var size int64
 		var randomAccessReader io.ReaderAt
@@ -102,7 +102,7 @@ func GetContentReader(reader ContentFileReader) (ContentReader, error) {
 			_ = closer.Close()
 			return nil, fmt.Errorf("unable to open zip file: %v", err)
 		}
-		return NewZipReader(reader.Filename(), r, reader, closer), nil
+		return NewZipReader(reader.Filename(), r, reader, globMatcher, closer), nil
 	}
 	return nil, nil
 }

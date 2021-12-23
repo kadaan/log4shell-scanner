@@ -226,22 +226,22 @@ func (s *ScanResult) AddFailure(id string, err error) {
 type scanner struct {
 	classScanner ClassScanner
 	jarScanner   JarScanner
-	includeGlobs []string
+	globMatcher  GlobMatcher
 	console      Console
 }
 
-func NewScanner(classScanner ClassScanner, jarScanner JarScanner, includeGlobs []string, verbosity int) Scanner {
+func NewScanner(classScanner ClassScanner, jarScanner JarScanner, globMatcher GlobMatcher, verbosity int) Scanner {
 	return &scanner{
 		classScanner: classScanner,
 		jarScanner:   jarScanner,
-		includeGlobs: includeGlobs,
+		globMatcher:  globMatcher,
 		console:      NewConsole(verbosity),
 	}
 }
 
 func (s *scanner) Scan(roots ...string) (ScanResult, error) {
 	result := NewScanResult()
-	walker := NewWalker(s.includeGlobs)
+	walker := NewWalker(s.globMatcher)
 	err := walker.WalkDirs(func(fileId string, filePath string, progress Progress) error {
 		if result.HasSeen(filePath) {
 			return nil
@@ -287,7 +287,7 @@ func (s *scanner) scan(id string, source interface{}, progress Progress) (ScanRe
 			return result, nil
 		} else {
 			contentFileReader := contentFile.Reader()
-			contentReader, err := GetContentReader(contentFileReader)
+			contentReader, err := GetContentReader(contentFileReader, s.globMatcher)
 			if err != nil {
 				result.AddFailure(fileId, err)
 				s.console.Error(progress, fileId)
@@ -301,7 +301,7 @@ func (s *scanner) scan(id string, source interface{}, progress Progress) (ScanRe
 		}
 	} else if filename, ok := source.(string); ok {
 		result.IncrementTotal()
-		contentReader, err := GetContentReaderFromFile(filename)
+		contentReader, err := GetContentReaderFromFile(filename, s.globMatcher)
 		if err != nil {
 			result.AddFailure(fileId, err)
 			s.console.Error(progress, fileId)

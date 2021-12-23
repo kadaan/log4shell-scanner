@@ -18,7 +18,6 @@ package lib
 import (
 	"errors"
 	"fmt"
-	"github.com/bmatcuk/doublestar/v4"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -34,12 +33,15 @@ type Walker interface {
 }
 
 type walker struct {
-	includeGlobs []string
-	seenPaths    map[string]struct{}
+	globMatcher GlobMatcher
+	seenPaths   map[string]struct{}
 }
 
-func NewWalker(includeGlobs []string) Walker {
-	return &walker{includeGlobs: includeGlobs, seenPaths: map[string]struct{}{}}
+func NewWalker(globMatcher GlobMatcher) Walker {
+	return &walker{
+		globMatcher: globMatcher,
+		seenPaths:   map[string]struct{}{},
+	}
 }
 
 func (w *walker) WalkDirs(fn WalkDirFunc, roots ...string) error {
@@ -85,13 +87,10 @@ func (w *walker) walkDirEx(fn WalkDirFunc, root string, path string, d DirEntryE
 		return nil
 	}
 	w.seenPaths[path] = struct{}{}
-	if d.IsDir() {
-		if d.DirEntry().Name() == ".git" {
+	if !w.globMatcher.IsIncluded(path) {
+		if d.IsDir() {
 			return fs.SkipDir
 		}
-		return nil
-	}
-	if !w.isIncluded(path) {
 		return nil
 	}
 	fileId, _ := filepath.Rel(root, path)
@@ -101,29 +100,12 @@ func (w *walker) walkDirEx(fn WalkDirFunc, root string, path string, d DirEntryE
 		if targetPath == nil || err != nil {
 			return err
 		}
-		//if d.SymLinkTargetEntry().IsDir() {
-		//	if d.DirEntry().Name() == ".git" {
-		//		return fs.SkipDir
-		//	}
-		//	return nil
-		//}
 		filePath = *targetPath
 		relTargetPath, _ := filepath.Rel(path, filePath)
 		fileId = fmt.Sprintf("%s (%s)", fileId, relTargetPath)
 	}
 	w.seenPaths[filePath] = struct{}{}
 	return fn(fileId, filePath, p)
-}
-
-func (w *walker) isIncluded(path string) bool {
-	includeGlobMatch := false
-	for _, g := range w.includeGlobs {
-		if ok, _ := doublestar.PathMatch(g, path); ok {
-			includeGlobMatch = true
-			break
-		}
-	}
-	return includeGlobMatch
 }
 
 func (w *walker) walkDir(root string, path string, d DirEntryEx, p Progress, walkDirFn walkDirFunc) error {
