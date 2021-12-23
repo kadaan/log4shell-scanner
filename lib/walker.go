@@ -19,7 +19,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/mitchellh/go-homedir"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -49,11 +48,7 @@ func (w *walker) WalkDirs(fn WalkDirFunc, roots ...string) error {
 		total:   len(roots),
 	}
 	for _, root := range roots {
-		expandedRoot, err := homedir.Expand(root)
-		if err != nil {
-			return err
-		}
-		absRoot, err := filepath.Abs(expandedRoot)
+		absRoot, err := AbsolutePath(root)
 		if err != nil {
 			return err
 		}

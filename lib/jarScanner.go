@@ -40,7 +40,7 @@ func (s JarScanner) Scan(contentReader ContentReader) ([]MatchType, error) {
 		if err != nil {
 			return []MatchType{}, fmt.Errorf("failed to check jar name/version: %v", err)
 		}
-		hash, err := contentReader.GetHash()
+		hash, err := contentReader.Hash()
 		if err != nil {
 			return []MatchType{}, fmt.Errorf("failed to get hash: %v", err)
 		}

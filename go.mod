@@ -12,6 +12,7 @@ require (
 	github.com/jwalton/gchalk v1.2.1
 	github.com/mitchellh/go-homedir v1.0.0
 	github.com/spf13/cobra v1.2.1
+	github.com/thecodeteam/goodbye v0.0.0-20170927022442-a83968bda2d3
 )
 
 require (

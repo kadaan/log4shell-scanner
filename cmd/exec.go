@@ -16,13 +16,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/jwalton/gchalk"
 	"github.com/kadaan/log4shell-scanner/lib"
 	"github.com/kadaan/log4shell-scanner/version"
 	"github.com/spf13/cobra"
+	"github.com/thecodeteam/goodbye"
 	"os"
+	"strconv"
 )
 
 var (
@@ -47,26 +50,37 @@ indicates they can be exploited.  The scanner with also search within jar, zip, 
 	scanner         lib.Scanner
 )
 
+const (
+	exitCodeAnnotationKey = "exit_code"
+)
+
 func init() {
 	workingDir, _ := os.Getwd()
 	rootCmd.SetVersionTemplate(version.Print())
-	rootCmd.Flags().StringSliceVarP(&roots, "root", "r", []string{workingDir}, "Root directory to scan")
+	rootCmd.Flags().StringSliceVarP(&roots, "root", "r", []string{workingDir}, "Root directory to scan (repeatable)")
 	_ = rootCmd.MarkFlagDirname("root")
-	rootCmd.Flags().StringSliceVar(&jars, "jars", []string{"log4j-core-/2.0-beta9/2.16.0"}, "Jar name and semver range to match")
-	rootCmd.Flags().StringVar(&jarHashesFile, "jar-hashes", "", "SHA256 hashes of jars to match")
+	rootCmd.Flags().StringSliceVar(&jars, "jars", []string{"log4j-core-/2.0-beta9/2.16.0"}, "Jar name and semver range to match (repeatable)")
+	rootCmd.Flags().StringVar(&jarHashesFile, "jar-hashes", "", "File containing SHA256 hashes of jars to match")
 	_ = rootCmd.MarkFlagFilename("jar-hashes")
-	rootCmd.Flags().StringSliceVar(&classes, "classes", []string{"JndiLookup"}, "Classes to match")
-	rootCmd.Flags().StringVar(&classHashesFile, "class-hashes", "", "SHA256 hashes of classes to match")
+	rootCmd.Flags().StringSliceVar(&classes, "classes", []string{"JndiLookup"}, "Classes to match (repeatable)")
+	rootCmd.Flags().StringVar(&classHashesFile, "class-hashes", "", "File containing SHA256 hashes of classes to match")
 	_ = rootCmd.MarkFlagFilename("class-hashes")
-	rootCmd.Flags().StringSliceVar(&includeGlobs, "include-globs", []string{"**/**"}, "Globs that indicate which path to include in the scan")
+	rootCmd.Flags().StringSliceVar(&includeGlobs, "include-globs", []string{"**/**"}, "Globs that indicate which path to include in the scan (repeatable)")
 	rootCmd.Flags().CountVarP(&verbosity, "verbose", "v", "Verbose logging")
 	rootCmd.Flags().BoolVar(&printVersion, "version", false, "Print version")
+	lib.AddProfileFlags(rootCmd)
 }
 
 func pre(_ *cobra.Command, _ []string) error {
 	if printVersion {
 		_, _ = fmt.Fprintf(os.Stdout, "%s\n", version.Print())
 		os.Exit(0)
+	}
+
+	for _, g := range includeGlobs {
+		if !doublestar.ValidatePathPattern(g) {
+			return fmt.Errorf("invalid include glob: %s", g)
+		}
 	}
 
 	classNameMatcher := lib.NewClassNameMatcher(classes)
@@ -91,18 +105,17 @@ func pre(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-func run(_ *cobra.Command, _ []string) error {
-	for _, g := range includeGlobs {
-		if !doublestar.ValidatePathPattern(g) {
-			return fmt.Errorf("invalid include glob: %s", g)
-		}
+func run(cmd *cobra.Command, _ []string) error {
+	err := lib.StartProfiling()
+	if err != nil {
+		return err
 	}
 
 	result, err := scanner.Scan(roots...)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("\nTotal Files Scanned: %d\n", result.GetTotalFilesScanned())
+	fmt.Printf("%s\nTotal Files Scanned: %d\n", lib.ResetLine, result.GetTotalFilesScanned())
 	fmt.Printf("\nTotal Matched Files: %d\n", result.GetTotalFilesMatched())
 	fmt.Printf("    Content Matches: %s\n", gchalk.Blue(fmt.Sprintf("%d", result.GetMatchCountByType(lib.Content))))
 	fmt.Printf("    Class Name Matches: %s\n", gchalk.Green(fmt.Sprintf("%d", result.GetMatchCountByType(lib.ClassName))))
@@ -110,6 +123,7 @@ func run(_ *cobra.Command, _ []string) error {
 	fmt.Printf("    Jar Name Matches: %s\n", gchalk.Cyan(fmt.Sprintf("%d", result.GetMatchCountByType(lib.JarName))))
 	fmt.Printf("    Jar Hash Matches: %s\n", gchalk.Yellow(fmt.Sprintf("%d", result.GetMatchCountByType(lib.JarHash))))
 	fmt.Println("\nMatched Files: ")
+
 	exitCode := 0
 	if result.GetTotalFilesMatched() > 0 {
 		exitCode += 2
@@ -130,14 +144,26 @@ func run(_ *cobra.Command, _ []string) error {
 	} else {
 		fmt.Println("    NONE")
 	}
-	if exitCode > 0 {
-		os.Exit(exitCode)
-	}
+	cmd.Annotations = make(map[string]string)
+	cmd.Annotations[exitCodeAnnotationKey] = fmt.Sprintf("%d", exitCode)
 	return nil
 }
 
 func Execute() {
+	ctx := context.Background()
+	defer goodbye.Exit(ctx, -1)
+	goodbye.Notify(ctx)
+
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
+	}
+	if exitCodeString, ok := rootCmd.Annotations[exitCodeAnnotationKey]; ok {
+		exitCode, err := strconv.ParseInt(exitCodeString, 10, 8)
+		if err != nil {
+			goodbye.Exit(ctx, 1)
+		}
+		goodbye.Exit(ctx, int(exitCode))
+	} else {
+		goodbye.Exit(ctx, 0)
 	}
 }

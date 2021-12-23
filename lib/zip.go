@@ -18,6 +18,7 @@ package lib
 import (
 	"archive/zip"
 	"fmt"
+	"io"
 )
 
 type zipFile struct {
@@ -30,7 +31,7 @@ func NewZipFile(file *zip.File) (ContentFile, error) {
 	if err != nil {
 		return nil, fmt.Errorf("unable to open zip content %s:\n%v", file.Name, err)
 	}
-	contentFileReader, err := NewContentFileReader(reader)
+	contentFileReader, err := NewContentFileReader(file.Name, int64(file.UncompressedSize64), NewUnbufferedReadCloser(reader))
 	if err != nil {
 		_ = reader.Close()
 		return nil, err
@@ -50,7 +51,7 @@ func (z *zipFile) UncompressedSize() int64 {
 	return int64(z.file.UncompressedSize64)
 }
 
-func (z *zipFile) GetReader() ContentFileReader {
+func (z *zipFile) Reader() ContentFileReader {
 	return z.reader
 }
 
@@ -61,18 +62,20 @@ func (z *zipFile) Close() error {
 type zipReader struct {
 	reader            *zip.Reader
 	contentFileReader ContentFileReader
+	closers           []io.Closer
 	filename          string
 }
 
-func NewZipReader(filename string, reader *zip.Reader, contentFileReader ContentFileReader) ContentReader {
+func NewZipReader(filename string, reader *zip.Reader, contentFileReader ContentFileReader, closers ...io.Closer) ContentReader {
 	return &zipReader{
 		reader:            reader,
 		contentFileReader: contentFileReader,
+		closers:           closers,
 		filename:          filename,
 	}
 }
 
-func (r *zipReader) GetFiles() FileIterable {
+func (r *zipReader) Files() FileIterable {
 	return &zipReaderFileIterable{
 		index: 0,
 		files: r.reader.File,
@@ -83,12 +86,26 @@ func (r *zipReader) Filename() string {
 	return r.filename
 }
 
-func (r *zipReader) GetHash() (string, error) {
-	return r.contentFileReader.GetHash()
+func (r *zipReader) Hash() (string, error) {
+	return r.contentFileReader.Hash()
 }
 
 func (r *zipReader) Close() error {
-	return r.contentFileReader.Close()
+	err := r.contentFileReader.Close()
+	if err != nil {
+		return err
+	}
+	for _, closer := range r.closers {
+		nextErr := closer.Close()
+		if nextErr != nil {
+			if err == nil {
+				err = nextErr
+			} else {
+				err = fmt.Errorf("%v: %v", err, nextErr)
+			}
+		}
+	}
+	return err
 }
 
 type zipReaderFileIterable struct {

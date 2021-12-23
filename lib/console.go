@@ -23,10 +23,10 @@ import (
 )
 
 const (
+	ResetLine           = "\r\033[K"
 	ellipsis            = "..."
-	resetLine           = "\r\033[K"
 	maxWidth            = 100
-	minProgressUpdateMs = 100
+	minProgressUpdateMs = 250
 )
 
 type Console interface {
@@ -46,7 +46,9 @@ func NewConsole(verbosity int) Console {
 }
 
 func (c *console) Error(progress Progress, message string) {
-	c.println(gchalk.Yellow("!!!"), message)
+	if c.verbosity > 1 {
+		c.println(gchalk.Yellow("!!!"), message)
+	}
 }
 
 func (c *console) Matched(progress Progress, message string) {
@@ -74,13 +76,13 @@ func (c *console) print(progress Progress, symbol string, message string) {
 	if now.Sub(c.lastUpdate).Milliseconds() > minProgressUpdateMs {
 		scanned := fmt.Sprintf("Scanned: %d of %d", progress.Current(), progress.Total())
 		width := maxWidth - len(scanned)
-		fmt.Printf("%s%s %s %s", resetLine, gchalk.Bold(scanned), symbol, gchalk.Grey(c.truncate(width, message)))
+		fmt.Printf("%s%s %s %s", ResetLine, gchalk.Bold(scanned), symbol, gchalk.Grey(c.truncate(width, message)))
 		c.lastUpdate = now
 	}
 }
 
 func (c *console) println(symbol string, message string) {
-	fmt.Printf("%s%s %s\n", resetLine, symbol, message)
+	fmt.Printf("%s%s %s\n", ResetLine, symbol, message)
 }
 
 func (c *console) truncate(maxWidth int, message string) string {

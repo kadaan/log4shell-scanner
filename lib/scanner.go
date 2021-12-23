@@ -101,20 +101,24 @@ func (s *ScanResult) GetMatches() []ScanMatch {
 	})
 
 	results := make([]ScanMatch, len(fileIds))
-	for i, k := range fileIds {
-		j := 0
+	i = 0
+	for _, k := range fileIds {
 		v := s.matches[k]
-		matchTypes := make([]string, len(v))
-		for m := range v {
-			matchTypes[j] = s.getMatchTypeString(m)
-			j += 1
+		if _, content := v[Content]; len(v) > 1 || !content {
+			j := 0
+			matchTypes := make([]string, len(v))
+			for m := range v {
+				matchTypes[j] = s.getMatchTypeString(m)
+				j += 1
+			}
+			sort.SliceStable(matchTypes, func(i, j int) bool {
+				return matchTypes[i] < matchTypes[j]
+			})
+			results[i] = ScanMatch{k, matchTypes}
+			i += 1
 		}
-		sort.SliceStable(matchTypes, func(i, j int) bool {
-			return matchTypes[i] < matchTypes[j]
-		})
-		results[i] = ScanMatch{k, matchTypes}
 	}
-	return results
+	return results[:i]
 }
 
 func (s *ScanResult) getMatchTypeString(m MatchType) string {
@@ -282,8 +286,8 @@ func (s *scanner) scan(id string, source interface{}, progress Progress) (ScanRe
 			s.console.Matched(progress, fileId)
 			return result, nil
 		} else {
-			contentFileReader := contentFile.GetReader()
-			contentReader, err := GetContentReader(contentFile.Name(), contentFile.UncompressedSize(), contentFileReader)
+			contentFileReader := contentFile.Reader()
+			contentReader, err := GetContentReader(contentFileReader)
 			if err != nil {
 				result.AddFailure(fileId, err)
 				s.console.Error(progress, fileId)
@@ -316,7 +320,7 @@ func (s *scanner) scan(id string, source interface{}, progress Progress) (ScanRe
 		return result, nil
 	}
 	result.AddMatch(fileId, matchTypes...)
-	files := reader.GetFiles()
+	files := reader.Files()
 	for {
 		next, err := files.Next()
 		if err != nil {

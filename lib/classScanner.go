@@ -42,7 +42,7 @@ func (s ClassScanner) Scan(contentFile ContentFile) ([]MatchType, error) {
 		if err != nil {
 			return []MatchType{}, err
 		}
-		hash, err := contentFile.GetReader().GetHash()
+		hash, err := contentFile.Reader().Hash()
 		if err != nil {
 			return []MatchType{}, err
 		}

@@ -26,13 +26,8 @@ type tarFile struct {
 }
 
 func NewTarFile(header *tar.Header, r *tar.Reader) (ContentFile, error) {
-	reader, err := NewContentFileReader(NoopCloseReader{r})
+	contentFileReader, err := NewContentFileReader(header.Name, header.Size, NewNopUnbufferedCloser(r))
 	if err != nil {
-		return nil, err
-	}
-	contentFileReader, err := NewContentFileReader(reader)
-	if err != nil {
-		_ = reader.Close()
 		return nil, err
 	}
 	return &tarFile{header: header, reader: contentFileReader}, nil
@@ -50,7 +45,7 @@ func (t *tarFile) IsDir() bool {
 	return t.header.Typeflag == tar.TypeDir
 }
 
-func (t *tarFile) GetReader() ContentFileReader {
+func (t *tarFile) Reader() ContentFileReader {
 	return t.reader
 }
 
@@ -72,7 +67,7 @@ func NewTarReader(filename string, reader *tar.Reader, contentFileReader Content
 	}
 }
 
-func (r *tarReader) GetFiles() FileIterable {
+func (r *tarReader) Files() FileIterable {
 	return &tarReaderFileIterable{filename: r.filename, reader: r.reader}
 }
 
@@ -80,8 +75,8 @@ func (r *tarReader) Filename() string {
 	return r.filename
 }
 
-func (r *tarReader) GetHash() (string, error) {
-	return r.contentFileReader.GetHash()
+func (r *tarReader) Hash() (string, error) {
+	return r.contentFileReader.Hash()
 }
 
 func (r *tarReader) Close() error {
