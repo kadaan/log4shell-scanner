@@ -93,6 +93,9 @@ func (w *walker) walkDirEx(fn WalkDirFunc, root string, path string, d DirEntryE
 		}
 		return nil
 	}
+	if d.IsDir() {
+		return nil
+	}
 	fileId, _ := filepath.Rel(root, path)
 	filePath := path
 	if d.IsSymLink() {
